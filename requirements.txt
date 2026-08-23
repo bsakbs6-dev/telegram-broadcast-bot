@@ -1,0 +1,6 @@
+aiogram>=3.17.0
+pyrogram>=2.0.106
+sqlalchemy[asyncio]>=2.0.38
+aiosqlite>=0.20.0
+pydantic-settings>=2.7.1
+python-dotenv>=1.0.1
