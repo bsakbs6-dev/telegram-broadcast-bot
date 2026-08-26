@@ -546,3 +546,42 @@ async def cb_admin_join_all_sessions(callback: CallbackQuery):
     )
     await cb_admin_sub_menu(callback)
 
+from aiogram.types import FSInputFile
+from bot.config import BASE_DIR
+
+@router.callback_query(F.data == "admin_download_db")
+async def cb_admin_download_db(callback: CallbackQuery):
+    """
+    Отправка файла базы данных (.db) администратору прямо в Telegram.
+    """
+    if not is_admin_filter(callback.from_user.id):
+        return
+
+    db_path = BASE_DIR / "broadcast_bot.db"
+    if not db_path.exists() and (BASE_DIR / "data" / "broadcast_bot.db").exists():
+        db_path = BASE_DIR / "data" / "broadcast_bot.db"
+
+    if not db_path.exists():
+        await callback.answer("❌ Файл базы данных не найден на сервере!", show_alert=True)
+        return
+
+    await callback.answer("⏳ Отправка резервной копии...", show_alert=False)
+    now_str = datetime.utcnow().strftime("%d.%m.%Y %H:%M:%S")
+
+    doc = FSInputFile(
+        path=str(db_path),
+        filename=f"broadcast_bot_backup_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.db"
+    )
+    caption = (
+        f"📦 <b>Резервная копия базы данных</b>\n\n"
+        f"🕒 <b>Дата создания:</b> <code>{now_str} (UTC)</code>\n"
+        f"📁 <b>Файл:</b> <code>{db_path.name}</code>\n\n"
+        f"<i>Сохраните этот файл. В любой момент вы сможете восстановить все сессии и настройки!</i>"
+    )
+
+    try:
+        await callback.message.answer_document(document=doc, caption=caption, parse_mode="HTML")
+    except Exception as e:
+        await callback.message.answer(f"⚠️ Ошибка отправки файла: {e}")
+
+

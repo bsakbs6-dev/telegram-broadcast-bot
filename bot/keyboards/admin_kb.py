@@ -25,6 +25,9 @@ def get_admin_main_kb(access_mode: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📢 Обязательная / Авто-подписка", callback_data="admin_sub_menu"),
         ],
         [
+            InlineKeyboardButton(text="💾 Скачать бэкап БД (.db)", callback_data="admin_download_db"),
+        ],
+        [
             InlineKeyboardButton(text="⬅️ В главное меню", callback_data="menu_main")
         ]
     ]
