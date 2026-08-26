@@ -1,5 +1,5 @@
 import logging
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
@@ -70,14 +70,31 @@ async def render_main_menu_text(user_id: int) -> str:
     )
     return text
 
+from bot.services.subscription_service import subscription_service
+from bot.keyboards.subscription_kb import get_subscription_gate_kb
+
 @router.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext):
+async def cmd_start(message: Message, state: FSMContext, bot: Bot):
     """
-    Обработчик команды /start.
+    Обработчик команды /start с проверкой обязательной подписки на каналы.
     """
     await state.clear()
     user_id = message.from_user.id
     is_admin = (user_id == config.ADMIN_ID)
+
+    # Проверка обязательной подписки
+    if not is_admin and await subscription_service.is_gate_enabled():
+        is_sub, unsub = await subscription_service.check_user_subscription(bot, user_id)
+        if not is_sub:
+            channels = await subscription_service.get_required_channels()
+            gate_text = (
+                "📢 <b>Чтобы использовать бота, вам необходимо подписаться на наши каналы:</b>\n\n"
+                + "\n".join([f"{i+1}. 📢 <a href='{ch['url']}'><b>{ch['title']}</b></a>" for i, ch in enumerate(channels)])
+                + "\n\n<i>После подписки нажмите кнопку «✅ Проверить подписку» ниже:</i>"
+            )
+            kb = get_subscription_gate_kb(channels)
+            await message.answer(gate_text, reply_markup=kb, parse_mode="HTML")
+            return
 
     text = await render_main_menu_text(user_id)
     kb = get_main_menu_kb(is_admin=is_admin)
@@ -85,13 +102,31 @@ async def cmd_start(message: Message, state: FSMContext):
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 @router.callback_query(F.data == "menu_main")
-async def cb_main_menu(callback: CallbackQuery, state: FSMContext):
+async def cb_main_menu(callback: CallbackQuery, state: FSMContext, bot: Bot):
     """
     Возврат в главное меню через инлайн-кнопку.
     """
     await state.clear()
     user_id = callback.from_user.id
     is_admin = (user_id == config.ADMIN_ID)
+
+    # Проверка обязательной подписки
+    if not is_admin and await subscription_service.is_gate_enabled():
+        is_sub, unsub = await subscription_service.check_user_subscription(bot, user_id)
+        if not is_sub:
+            channels = await subscription_service.get_required_channels()
+            gate_text = (
+                "📢 <b>Чтобы использовать бота, вам необходимо подписаться на наши каналы:</b>\n\n"
+                + "\n".join([f"{i+1}. 📢 <a href='{ch['url']}'><b>{ch['title']}</b></a>" for i, ch in enumerate(channels)])
+                + "\n\n<i>После подписки нажмите кнопку «✅ Проверить подписку» ниже:</i>"
+            )
+            kb = get_subscription_gate_kb(channels)
+            try:
+                await callback.message.edit_text(gate_text, reply_markup=kb, parse_mode="HTML")
+            except Exception:
+                await callback.message.answer(gate_text, reply_markup=kb, parse_mode="HTML")
+            await callback.answer()
+            return
 
     text = await render_main_menu_text(user_id)
     kb = get_main_menu_kb(is_admin=is_admin)

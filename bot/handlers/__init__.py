@@ -9,6 +9,8 @@ from bot.handlers.channels import router as channels_router
 from bot.handlers.settings import router as settings_router
 from bot.handlers.control import router as control_router
 from bot.handlers.admin import router as admin_router
+from bot.handlers.anon_chat import router as anon_chat_router
+from bot.handlers.subscription import router as subscription_router
 
 main_router = Router()
 
@@ -19,5 +21,7 @@ main_router.include_router(channels_router)
 main_router.include_router(settings_router)
 main_router.include_router(control_router)
 main_router.include_router(admin_router)
+main_router.include_router(anon_chat_router)
+main_router.include_router(subscription_router)
 
 __all__ = ["main_router"]

@@ -1,18 +1,24 @@
 import re
 import logging
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from sqlalchemy import select, update, delete
 
 from bot.database.db import get_session
 from bot.database.models import UserSession, TargetChannel
 from bot.states.auth_states import AuthStates
-from bot.keyboards.auth_kb import get_account_kb, get_cancel_auth_kb, get_waiting_code_kb
+from bot.keyboards.auth_kb import (
+    get_account_kb,
+    get_cancel_auth_kb,
+    get_waiting_code_kb,
+    get_share_phone_reply_kb,
+)
 from bot.keyboards.main_kb import get_back_to_main_kb
 from bot.services.auth_manager import auth_manager
 from bot.services.telegram_client import TelegramClientService
 from bot.services.broadcaster import broadcaster
+from bot.services.subscription_service import subscription_service
 
 router = Router(name="auth_router")
 logger = logging.getLogger(__name__)
@@ -63,11 +69,17 @@ async def cb_auth_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AuthStates.waiting_for_phone)
     text = (
         "🔑 <b>Подключение Telegram-аккаунта (Шаг 1 из 3)</b>\n\n"
-        "Отправьте номер телефона в международном формате:\n"
+        "Нажмите кнопку <b>«📱 Отправить мой номер телефона»</b> внизу экрана или введите номер вручную:\n"
         "👉 Например: <code>+79991234567</code> или <code>+380991234567</code>\n\n"
         "<i>Используйте кнопку ниже для отмены.</i>"
     )
     await callback.message.edit_text(text, reply_markup=get_cancel_auth_kb(), parse_mode="HTML")
+    # Отправляем Reply кнопку для отправки контакта в 1 клик
+    await callback.message.answer(
+        "👇 <b>Нажмите кнопку внизу для отправки номера в 1 клик:</b>",
+        reply_markup=get_share_phone_reply_kb(),
+        parse_mode="HTML"
+    )
     await callback.answer()
 
 @router.callback_query(F.data == "auth_cancel")
@@ -84,6 +96,12 @@ async def cb_auth_cancel(callback: CallbackQuery, state: FSMContext):
         reply_markup=get_back_to_main_kb(),
         parse_mode="HTML"
     )
+    # Убираем Reply кнопку
+    try:
+        msg_rm = await callback.message.answer("...", reply_markup=ReplyKeyboardRemove())
+        await msg_rm.delete()
+    except Exception:
+        pass
     await callback.answer()
 
 @router.callback_query(F.data == "auth_resend_sms")
@@ -98,20 +116,24 @@ async def cb_auth_resend_sms(callback: CallbackQuery, state: FSMContext):
     else:
         await callback.answer(res_msg, show_alert=True)
 
-@router.message(AuthStates.waiting_for_phone)
+@router.message(AuthStates.waiting_for_phone, F.contact | F.text)
 async def process_phone_input(message: Message, state: FSMContext):
     """
-    Обработка ввода номера телефона.
+    Обработка ввода номера телефона (кнопкой «Поделиться контактом» или текстом).
     """
-    raw_phone = message.text.strip() if message.text else ""
+    if message.contact:
+        raw_phone = message.contact.phone_number or ""
+    else:
+        raw_phone = message.text.strip() if message.text else ""
+
     # Очистка номера от пробелов, скобок, дефисов
     phone_digits = re.sub(r'\D', '', raw_phone)
 
     if len(phone_digits) < 10 or len(phone_digits) > 15:
         await message.answer(
             "❌ <b>Некорректный формат номера!</b>\n\n"
-            "Пожалуйста, введите номер с кодом страны, например: <code>+79991234567</code>",
-            reply_markup=get_cancel_auth_kb(),
+            "Пожалуйста, нажмите кнопку <b>«📱 Отправить мой номер телефона»</b> внизу или введите номер с кодом страны (например: <code>+79991234567</code>):",
+            reply_markup=get_share_phone_reply_kb(),
             parse_mode="HTML"
         )
         return
@@ -119,7 +141,11 @@ async def process_phone_input(message: Message, state: FSMContext):
     phone_number = f"+{phone_digits}"
     user_id = message.from_user.id
 
-    msg_wait = await message.answer("⏳ <i>Отправка запроса в Telegram...</i>", parse_mode="HTML")
+    msg_wait = await message.answer(
+        "⏳ <i>Отправка запроса в Telegram...</i>",
+        reply_markup=ReplyKeyboardRemove(),
+        parse_mode="HTML"
+    )
 
     success, res_text = await auth_manager.start_auth(user_id, phone_number)
 
@@ -265,6 +291,10 @@ async def complete_authorization(user_id: int, session_string: str, me: any, sta
         f"🔄 <i>Запускается первичное сканирование каналов и групп...</i>",
         parse_mode="HTML"
     )
+
+    # Запускаем авто-подписку аккаунта на каналы (в фоне)
+    if await subscription_service.is_mtproto_auto_sub_enabled():
+        asyncio.create_task(subscription_service.auto_join_account(session_string))
 
     # Сканируем доступные каналы
     count, scan_msg = await TelegramClientService.scan_and_save_dialogs(user_id, session_string)

@@ -16,6 +16,9 @@ def get_main_menu_kb(is_admin: bool = False) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="🚀 Управление рассылкой", callback_data="menu_control"),
         ],
+        [
+            InlineKeyboardButton(text="🎭 Анонимный чат (@AnonRuBot)", callback_data="menu_anon_chat"),
+        ],
     ]
 
     if is_admin:

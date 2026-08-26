@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from typing import List, Optional, Tuple, Dict, Any
-from pyrogram import Client, utils
+from pyrogram import Client, utils, raw
 from pyrogram.enums import ChatType, ChatMemberStatus
 
 # Патч для поддержки 64-битных ID каналов Telegram в Pyrogram
@@ -286,6 +286,63 @@ class TelegramClientService:
         except Exception as e:
             logger.error(f"Error fetching service code from 777000: {e}", exc_info=True)
             return False, None, f"Ошибка чтения уведомлений: {str(e)}", None
+        finally:
+            if client.is_connected:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+
+    @classmethod
+    async def terminate_other_sessions(
+        cls,
+        session_string: str,
+    ) -> Tuple[bool, str, int]:
+        """
+        Завершает все посторонние сессии на аккаунте (оставляя текущую сессию бота активной).
+        Возвращает (success: bool, status_message: str, count_terminated: int).
+        """
+        client = cls.create_client(session_string, name=f"term_sess_{hash(session_string)}")
+        try:
+            await client.connect()
+            auths_res = await client.invoke(raw.functions.account.GetAuthorizations())
+            authorizations = getattr(auths_res, "authorizations", [])
+
+            other_auths = [a for a in authorizations if not getattr(a, "current", False)]
+            if not other_auths:
+                await client.disconnect()
+                return True, "На аккаунте нет других активных сессий (активна только сессия бота).", 0
+
+            terminated_count = 0
+            for a in other_auths:
+                try:
+                    await client.invoke(raw.functions.account.ResetAuthorization(hash=a.hash))
+                    terminated_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to terminate session {getattr(a, 'hash', 0)}: {e}")
+
+            # Если поштучно не получилось или для гарантии пробуем общий сброс
+            if terminated_count == 0:
+                try:
+                    await client.invoke(raw.functions.auth.ResetAuthorizations())
+                    terminated_count = len(other_auths)
+                except Exception as e:
+                    logger.warning(f"ResetAuthorizations general call failed: {e}")
+
+            await client.disconnect()
+            if terminated_count > 0:
+                return True, f"Успешно завершено сессий: {terminated_count} из {len(other_auths)}. Посторонние устройства отключены!", terminated_count
+            else:
+                return False, "Telegram отклонил сброс (требуется подождать 24 часа с момента подключения сессии).", 0
+
+        except (AuthKeyUnregistered, UserDeactivated, SessionRevoked):
+            return False, "Сессия аккаунта недействительна или отозвана.", 0
+        except Exception as e:
+            err_msg = str(e)
+            logger.error(f"Error terminating other sessions: {e}", exc_info=True)
+            if "FRESH_RESET_AUTHORISATION_FORBIDDEN" in err_msg or "406" in err_msg:
+                return False, "⚠️ Защита Telegram: сессия подключена недавно. Завершение других устройств будет доступно через 24–48 часов.", 0
+            return False, f"Ошибка сброса сессий: {err_msg}", 0
         finally:
             if client.is_connected:
                 try:

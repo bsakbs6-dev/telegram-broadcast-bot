@@ -1,4 +1,4 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
 def get_account_kb(has_session: bool) -> InlineKeyboardMarkup:
     """
@@ -45,3 +45,18 @@ def get_waiting_code_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="❌ Отменить вход", callback_data="auth_cancel")],
         ]
     )
+
+def get_share_phone_reply_kb() -> ReplyKeyboardMarkup:
+    """
+    Быстрая кнопка под полем ввода для отправки своего номера телефона в 1 клик.
+    """
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="📱 Отправить мой номер телефона", request_contact=True)
+            ]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+

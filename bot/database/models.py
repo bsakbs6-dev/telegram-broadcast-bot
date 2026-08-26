@@ -70,6 +70,9 @@ class User(Base):
     channels: Mapped[list["TargetChannel"]] = relationship(
         "TargetChannel", back_populates="user", cascade="all, delete-orphan"
     )
+    anon_chat_settings: Mapped[Optional["AnonChatSettings"]] = relationship(
+        "AnonChatSettings", back_populates="user", cascade="all, delete-orphan", uselist=False
+    )
 
     def __repr__(self):
         return f"<User id={self.id} username={self.username}>"
@@ -180,3 +183,33 @@ class TargetChannel(Base):
 
     def __repr__(self):
         return f"<TargetChannel user_id={self.user_id} chat_id={self.chat_id} title={self.title} selected={self.is_selected}>"
+
+class AnonChatSettings(Base):
+    """
+    Настройки автоматического ведения диалогов и рассылки в @AnonRuBot.
+    """
+    __tablename__ = "anon_chat_settings"
+
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    is_running: Mapped[bool] = mapped_column(Boolean, default=False)
+    message_text: Mapped[str] = mapped_column(
+        Text,
+        default="Привет! Интересует предложение? Напиши +, расскажу подробнее."
+    )
+    trigger_symbol: Mapped[str] = mapped_column(String(64), default="+")
+    delay_seconds: Mapped[int] = mapped_column(Integer, default=2)
+    total_dialogs: Mapped[int] = mapped_column(Integer, default=0)
+    total_leads: Mapped[int] = mapped_column(Integer, default=0)
+    last_lead_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    user: Mapped["User"] = relationship("User", back_populates="anon_chat_settings")
+
+    def __repr__(self):
+        return f"<AnonChatSettings user_id={self.user_id} is_running={self.is_running} leads={self.total_leads}>"
+

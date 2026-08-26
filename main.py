@@ -14,6 +14,7 @@ from bot.database.db import init_db, engine
 from bot.middlewares.access import AccessMiddleware
 from bot.handlers import main_router
 from bot.services.broadcaster import broadcaster
+from bot.services.anon_chat_worker import anon_chat_service
 
 logger = logging.getLogger("main")
 
@@ -63,9 +64,10 @@ async def main():
     # 5. Регистрация роутеров
     dp.include_router(main_router)
 
-    # 6. Инициализация фонового сервиса рассылки
+    # 6. Инициализация фонового сервиса рассылки и анонимного чата
     broadcaster.set_bot(bot)
     await broadcaster.restore_active_broadcasts(bot)
+    await anon_chat_service.restore_active_workers(bot)
 
     # 7. Установка команд меню
     await set_bot_commands(bot)

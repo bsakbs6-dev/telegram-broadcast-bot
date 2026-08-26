@@ -22,6 +22,9 @@ def get_admin_main_kb(access_mode: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📱 Сессии пользователей", callback_data="admin_sessions_list"),
         ],
         [
+            InlineKeyboardButton(text="📢 Обязательная / Авто-подписка", callback_data="admin_sub_menu"),
+        ],
+        [
             InlineKeyboardButton(text="⬅️ В главное меню", callback_data="menu_main")
         ]
     ]
