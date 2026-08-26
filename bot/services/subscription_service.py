@@ -183,16 +183,28 @@ class SubscriptionService:
         Возвращает (processed_accounts, total_joined).
         """
         async with get_session() as session:
-            stmt = select(UserSession).where(UserSession.is_active == True)
-            sessions = (await session.execute(stmt)).scalars().all()
+            # Выбираем все сессии, где is_active True или 1 или не False
+            stmt = select(
+                UserSession.user_id,
+                UserSession.session_string,
+                UserSession.first_name,
+                UserSession.phone_number
+            ).where(
+                (UserSession.is_active == True) | (UserSession.is_active == 1) | (UserSession.is_active.is_(None))
+            )
+            rows = (await session.execute(stmt)).all()
 
+        logger.info(f"auto_join_all_active_accounts: Found {len(rows)} sessions in DB")
         total_joined = 0
-        for s in sessions:
-            joined, _ = await self.auto_join_account(s.session_string)
-            total_joined += joined
+        for uid, session_string, fname, phone in rows:
+            try:
+                joined, _ = await self.auto_join_account(session_string)
+                total_joined += joined
+            except Exception as e:
+                logger.error(f"Error auto-joining account {phone or uid}: {e}")
             await asyncio.sleep(1)
 
-        return len(sessions), total_joined
+        return len(rows), total_joined
 
 # Синглтон сервиса подписок
 subscription_service = SubscriptionService()

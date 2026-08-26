@@ -11,6 +11,16 @@ pyrogram.utils.MIN_CHANNEL_ID = -1009999999999999
 # Корневая директория проекта
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Автоматический поиск существующего файла базы данных (в корне или в папке data/)
+def get_default_db_url() -> str:
+    db_root = BASE_DIR / "broadcast_bot.db"
+    db_data = BASE_DIR / "data" / "broadcast_bot.db"
+
+    # Если в папке data/ есть база и она больше — берем её
+    if db_data.exists() and (not db_root.exists() or db_data.stat().st_size >= db_root.stat().st_size):
+        return f"sqlite+aiosqlite:///{db_data.as_posix()}"
+    return f"sqlite+aiosqlite:///{db_root.as_posix()}"
+
 class Settings(BaseSettings):
     """
     Класс конфигурации приложения.
@@ -24,7 +34,7 @@ class Settings(BaseSettings):
     SYSTEM_VERSION: str = Field(default="Windows", description="Версия ОС")
     ADMIN_ID: int = Field(default=7061799104, description="ID главного администратора системы")
     DATABASE_URL: str = Field(
-        default=f"sqlite+aiosqlite:///{BASE_DIR / 'broadcast_bot.db'}",
+        default_factory=get_default_db_url,
         description="URL подключения к БД SQLAlchemy Async"
     )
     PROXY_URL: str | None = Field(default=None, description="Опциональный HTTP/SOCKS5 прокси для Telegram Bot API")
