@@ -200,6 +200,7 @@ class AnonChatSettings(Base):
     )
     trigger_symbol: Mapped[str] = mapped_column(String(64), default="+")
     delay_seconds: Mapped[int] = mapped_column(Integer, default=2)
+    auto_skip_seconds: Mapped[int] = mapped_column(Integer, default=20)
     total_dialogs: Mapped[int] = mapped_column(Integer, default=0)
     total_leads: Mapped[int] = mapped_column(Integer, default=0)
     last_lead_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -212,4 +213,46 @@ class AnonChatSettings(Base):
 
     def __repr__(self):
         return f"<AnonChatSettings user_id={self.user_id} is_running={self.is_running} leads={self.total_leads}>"
+
+class BannedUser(Base):
+    """
+    Заблокированные пользователи бота (бан с причиной и сроком / навсегда).
+    """
+    __tablename__ = "banned_users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True, nullable=False)
+    username: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    reason: Mapped[str] = mapped_column(String(255), default="Нарушение правил")
+    banned_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    banned_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)  # None = навсегда
+    banned_by: Mapped[int] = mapped_column(BigInteger, default=0)
+
+    def __repr__(self):
+        return f"<BannedUser tg_id={self.telegram_id} until={self.banned_until}>"
+
+class AdminUser(Base):
+    """
+    Администраторы бота с гранулярной настройкой прав.
+    """
+    __tablename__ = "admin_users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True, nullable=False)
+    username: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    added_by: Mapped[int] = mapped_column(BigInteger, default=0)
+
+    # Права доступа
+    can_manage_whitelist: Mapped[bool] = mapped_column(Boolean, default=True)
+    can_manage_broadcasts: Mapped[bool] = mapped_column(Boolean, default=True)
+    can_view_sessions: Mapped[bool] = mapped_column(Boolean, default=True)
+    can_ban_users: Mapped[bool] = mapped_column(Boolean, default=True)
+    can_manage_sub: Mapped[bool] = mapped_column(Boolean, default=True)
+    can_manage_anon: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<AdminUser tg_id={self.telegram_id} username={self.username}>"
+
 

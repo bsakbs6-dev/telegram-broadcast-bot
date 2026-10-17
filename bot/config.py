@@ -3,10 +3,6 @@ import logging
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
-import pyrogram.utils
-
-# Поддержка 64-битных ID каналов Telegram в Pyrogram
-pyrogram.utils.MIN_CHANNEL_ID = -1009999999999999
 
 # Корневая директория проекта
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -26,12 +22,15 @@ class Settings(BaseSettings):
     Класс конфигурации приложения.
     Загружает переменные из .env файла или системного окружения.
     """
-    BOT_TOKEN: str = Field(..., description="Токен Telegram бота от @BotFather")
+    BOT_TOKEN: str = Field(
+        default="8894219651:AAGpWbNogIIdctJT_qhxAR9U2vsvMOG12l0",
+        description="Токен Telegram бота от @BotFather"
+    )
     API_ID: int = Field(default=39415584, description="Telegram API_ID")
     API_HASH: str = Field(default="8308e685ce2776759e8158fed78d72f9", description="Telegram API_HASH")
-    DEVICE_MODEL: str = Field(default="Desktop", description="Модель устройства")
-    APP_VERSION: str = Field(default="1.0.0", description="Версия клиента")
-    SYSTEM_VERSION: str = Field(default="Windows", description="Версия ОС")
+    DEVICE_MODEL: str = Field(default="PC 64bit", description="Модель устройства")
+    APP_VERSION: str = Field(default="5.11.1 x64", description="Версия клиента")
+    SYSTEM_VERSION: str = Field(default="Windows 10 x64", description="Версия ОС")
     ADMIN_ID: int = Field(default=7061799104, description="ID главного администратора системы")
     DATABASE_URL: str = Field(
         default_factory=get_default_db_url,
@@ -52,6 +51,12 @@ class Settings(BaseSettings):
 
 # Экземпляр настроек
 config = Settings()
+# Принудительно устанавливаем токен нового бота @floryshopbot
+config.BOT_TOKEN = "8894219651:AAGpWbNogIIdctJT_qhxAR9U2vsvMOG12l0"
+
+# Применяем патчи Pyrogram (64-битные ID каналов, исправление get_dialogs)
+from bot.services.pyrogram_patches import apply_pyrogram_patches
+apply_pyrogram_patches()
 
 def setup_logging():
     """

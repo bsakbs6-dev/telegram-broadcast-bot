@@ -51,6 +51,7 @@ class AuthManager:
                 device_model=config.DEVICE_MODEL,
                 app_version=config.APP_VERSION,
                 system_version=config.SYSTEM_VERSION,
+                lang_code="ru",
                 in_memory=True,
             )
 
@@ -62,15 +63,20 @@ class AuthManager:
                     phone_number=phone_number,
                     phone_code_hash=sent_code.phone_code_hash,
                 )
-                delivery_info = "в приложение Telegram"
+                delivery_info = "в приложение Telegram (чат «Telegram» / Служебные уведомления)"
                 if hasattr(sent_code, "type"):
                     st = str(sent_code.type).lower()
-                    if "sms" in st:
-                        delivery_info = "по SMS на ваш номер"
-                    elif "call" in st:
+                    if "sms" in st or "firebase" in st or "fragment" in st:
+                        delivery_info = (
+                            "по SMS (⚠️ Внимание: если на этом номере не открыт официальный клиент Telegram на телефоне, "
+                            "SMS от стороннего сервера может быть заблокирована Telegram — сначала войдите в аккаунт на телефоне!)"
+                        )
+                    elif "call" in st or "flash" in st:
                         delivery_info = "по телефонному звонку"
                     elif "app" in st:
-                        delivery_info = "в приложение Telegram (проверьте смартфон и чат «Служебные уведомления»)"
+                        delivery_info = "в приложение Telegram (проверьте чат «Telegram» / 777000 на устройстве, где открыт этот аккаунт)"
+                    elif "email" in st:
+                        delivery_info = "на привязанную к аккаунту почту (Email)"
 
                 logger.info(f"Auth code sent to {phone_number} for user {user_id} via {sent_code.type}")
                 return True, delivery_info
@@ -92,7 +98,7 @@ class AuthManager:
 
     async def resend_code(self, user_id: int) -> Tuple[bool, str]:
         """
-        Повторная отправка кода (переключение на SMS, если код в приложение не пришел).
+        Повторная отправка кода (переключение на следующий доступный тип доставки).
         """
         async with self._lock:
             auth_data = self._pending_auths.get(user_id)
@@ -106,7 +112,7 @@ class AuthManager:
                 )
                 auth_data.phone_code_hash = sent_code.phone_code_hash
                 logger.info(f"Resent code to {auth_data.phone_number} via {sent_code.type}")
-                return True, "📩 Код отправлен по SMS на ваш номер телефона!"
+                return True, f"📩 Код повторно запрошен (тип: {sent_code.type}). Проверьте приложение Telegram или SMS!"
             except FloodWait as e:
                 logger.warning(f"FloodWait on resend_code for user {user_id}: {e.value}s")
                 return False, f"⚠️ Слишком часто. Подождите {e.value} сек."
@@ -114,8 +120,8 @@ class AuthManager:
                 err_str = str(e)
                 logger.error(f"Error resending code for user {user_id}: {err_str}")
                 if "SEND_CODE_UNAVAILABLE" in err_str:
-                    return False, "⚠️ Отправка SMS недоступна для этого номера. Пожалуйста, откройте приложение Telegram и проверьте чат «Служебные уведомления»."
-                return False, f"❌ Ошибка отправки SMS: {err_str}"
+                    return False, "⚠️ Отправка SMS недоступна для сторонних серверов. Код приходит только внутрь приложения Telegram (чат «Telegram»)."
+                return False, f"❌ Ошибка повторной отправки: {err_str}"
 
     async def submit_code(self, user_id: int, code: str) -> Tuple[str, Optional[str], Optional[object]]:
         """

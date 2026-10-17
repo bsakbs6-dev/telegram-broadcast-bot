@@ -68,6 +68,69 @@ class SubscriptionService:
                     pass
         return DEFAULT_CHANNELS
 
+    async def add_channel(self, username_or_url: str, title: Optional[str] = None) -> bool:
+        """
+        Добавление нового канала в список обязательной подписки.
+        """
+        raw = username_or_url.strip()
+        if "t.me/" in raw:
+            username = raw.split("t.me/")[-1].split("/")[0].split("?")[0].lstrip("@").strip()
+        else:
+            username = raw.lstrip("@").strip()
+
+        if not username:
+            return False
+
+        if not title:
+            title = username
+
+        url = f"https://t.me/{username}"
+
+        channels = list(await self.get_required_channels())
+        for ch in channels:
+            if ch.get("username", "").lower() == username.lower():
+                ch["title"] = title
+                ch["url"] = url
+                break
+        else:
+            channels.append({
+                "title": title,
+                "username": username,
+                "url": url
+            })
+
+        async with get_session() as session:
+            stmt = select(SystemSetting).where(SystemSetting.key == "required_channels")
+            setting = (await session.execute(stmt)).scalar_one_or_none()
+            json_val = json.dumps(channels, ensure_ascii=False)
+            if not setting:
+                session.add(SystemSetting(key="required_channels", value=json_val))
+            else:
+                setting.value = json_val
+        return True
+
+    async def remove_channel(self, username: str) -> bool:
+        """
+        Удаление канала из списка обязательной подписки.
+        """
+        clean_target = username.lstrip("@").lower().strip()
+        channels = list(await self.get_required_channels())
+        initial_len = len(channels)
+        channels = [ch for ch in channels if ch.get("username", "").lower().strip() != clean_target]
+
+        if len(channels) == initial_len:
+            return False
+
+        async with get_session() as session:
+            stmt = select(SystemSetting).where(SystemSetting.key == "required_channels")
+            setting = (await session.execute(stmt)).scalar_one_or_none()
+            json_val = json.dumps(channels, ensure_ascii=False)
+            if not setting:
+                session.add(SystemSetting(key="required_channels", value=json_val))
+            else:
+                setting.value = json_val
+        return True
+
     async def toggle_gate(self) -> bool:
         """
         Переключение режима обязательной подписки при старте.

@@ -20,7 +20,7 @@ def get_subscription_gate_kb(channels: List[Dict[str, str]]) -> InlineKeyboardMa
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-def get_admin_auto_sub_kb(gate_enabled: bool, mtproto_enabled: bool) -> InlineKeyboardMarkup:
+def get_admin_auto_sub_kb(gate_enabled: bool, mtproto_enabled: bool, channels: List[Dict[str, str]]) -> InlineKeyboardMarkup:
     """
     Клавиатура управления разделом «Авто-подписка» в панели администратора.
     """
@@ -45,10 +45,25 @@ def get_admin_auto_sub_kb(gate_enabled: bool, mtproto_enabled: bool) -> InlineKe
                 text="⚡️ Подписать все сессии сейчас",
                 callback_data="admin_join_all_sessions"
             )
-        ],
-        [
-            InlineKeyboardButton(text="⬅️ В панель админа", callback_data="menu_admin")
         ]
     ]
+
+    # Кнопки каналов для удаления
+    if channels:
+        for ch in channels:
+            title = ch.get("title", ch.get("username", "Канал"))
+            uname = ch.get("username", "")
+            keyboard.append([
+                InlineKeyboardButton(text=f"📢 {title}", url=ch.get("url", f"https://t.me/{uname}")),
+                InlineKeyboardButton(text="🗑 Удалить", callback_data=f"admin_sub_del:{uname}"),
+            ])
+
+    keyboard.append([
+        InlineKeyboardButton(text="➕ Добавить канал в ОП", callback_data="admin_sub_add_prompt")
+    ])
+
+    keyboard.append([
+        InlineKeyboardButton(text="⬅️ В панель админа", callback_data="menu_admin")
+    ])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)

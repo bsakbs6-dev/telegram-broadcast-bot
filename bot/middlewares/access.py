@@ -4,7 +4,7 @@ from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject, Message, CallbackQuery
 
 from bot.config import config
-from bot.database.db import get_session, get_or_create_user, is_user_allowed
+from bot.database.db import get_session, get_or_create_user, is_user_allowed, check_user_ban
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,27 @@ class AccessMiddleware(BaseMiddleware):
         first_name = user.first_name
 
         async with get_session() as session:
+            # 0. Проверяем наличие активного бана
+            is_banned, ban_reason, banned_until = await check_user_ban(session, telegram_id)
+            if is_banned:
+                duration_str = f"до {banned_until.strftime('%d.%m.%Y %H:%M UTC')}" if banned_until else "НАВСЕГДА ♾"
+                ban_text = (
+                    "🚫 <b>Ваш доступ к боту заблокирован!</b>\n\n"
+                    f"📄 <b>Причина:</b> <i>{ban_reason or 'Нарушение правил'}</i>\n"
+                    f"⏳ <b>Срок блокировки:</b> <code>{duration_str}</code>\n\n"
+                    "<i>По вопросам разблокировки обратитесь к главному администратору.</i>"
+                )
+                if isinstance(event, Message):
+                    await event.answer(ban_text, parse_mode="HTML")
+                elif isinstance(event, CallbackQuery):
+                    await event.answer("🚫 Вы заблокированы в боте!", show_alert=True)
+                    if event.message:
+                        try:
+                            await event.message.edit_text(ban_text, parse_mode="HTML")
+                        except Exception:
+                            pass
+                return None
+
             # Создаем или обновляем пользователя в базе данных
             db_user = await get_or_create_user(
                 session=session,

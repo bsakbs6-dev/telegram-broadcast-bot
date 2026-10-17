@@ -1,6 +1,6 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-def get_anon_chat_kb(is_running: bool, trigger_symbol: str) -> InlineKeyboardMarkup:
+def get_anon_chat_kb(is_running: bool, trigger_symbol: str, auto_skip_seconds: int = 20) -> InlineKeyboardMarkup:
     """
     Клавиатура управления модулем анонимного чата (@AnonRuBot).
     """
@@ -27,6 +27,12 @@ def get_anon_chat_kb(is_running: bool, trigger_symbol: str) -> InlineKeyboardMar
         InlineKeyboardButton(
             text="📝 Изменить текст сообщения",
             callback_data="anon_edit_text"
+        )
+    ])
+    keyboard.append([
+        InlineKeyboardButton(
+            text=f"⏱ Авто-скип (/next): {auto_skip_seconds} сек.",
+            callback_data="anon_edit_skip_timeout"
         )
     ])
     keyboard.append([

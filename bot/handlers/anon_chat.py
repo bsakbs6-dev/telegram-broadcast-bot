@@ -30,6 +30,7 @@ async def render_anon_chat_view(user_id: int):
         is_running = False
         message_text = "Привет! Интересует? Напиши +, расскажу подробнее."
         trigger_symbol = "+"
+        auto_skip_seconds = 20
         total_dialogs = 0
         total_leads = 0
         last_lead_str = "Еще не было"
@@ -37,6 +38,7 @@ async def render_anon_chat_view(user_id: int):
         is_running = anon_chat_service.is_running(user_id) or settings.is_running
         message_text = settings.message_text or "Привет! Интересует? Напиши +"
         trigger_symbol = settings.trigger_symbol or "+"
+        auto_skip_seconds = getattr(settings, "auto_skip_seconds", 20) or 20
         total_dialogs = settings.total_dialogs
         total_leads = settings.total_leads
         last_lead_str = settings.last_lead_at.strftime("%Y-%m-%d %H:%M:%S") if settings.last_lead_at else "Еще не было"
@@ -52,6 +54,7 @@ async def render_anon_chat_view(user_id: int):
         f"📱 <b>Аккаунт:</b> {acc_info}\n"
         "────────────────────\n"
         f"🎯 <b>Триггер-символ лида:</b> <code>{trigger_symbol}</code>\n"
+        f"⏱ <b>Авто-скип (/next):</b> через <code>{auto_skip_seconds} сек.</code>\n"
         f"📈 <b>Найдено собеседников:</b> <code>{total_dialogs}</code>\n"
         f"🔥 <b>Поймано лидов (ответов «{trigger_symbol}»):</b> <code>{total_leads}</code>\n"
         f"🕒 <b>Крайний лид:</b> {last_lead_str}\n"
@@ -60,7 +63,11 @@ async def render_anon_chat_view(user_id: int):
         f"<i>{message_text}</i>\n"
     )
 
-    kb = get_anon_chat_kb(is_running=is_running, trigger_symbol=trigger_symbol)
+    kb = get_anon_chat_kb(
+        is_running=is_running,
+        trigger_symbol=trigger_symbol,
+        auto_skip_seconds=auto_skip_seconds,
+    )
     return text, kb
 
 @router.callback_query(F.data == "menu_anon_chat")
@@ -188,6 +195,60 @@ async def process_anon_trigger_input(message: Message, state: FSMContext):
 
     await state.clear()
     await message.answer(f"✅ <b>Триггер лида изменен на: <code>{raw_trigger}</code>!</b>", parse_mode="HTML")
+    text, kb = await render_anon_chat_view(user_id)
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+@router.callback_query(F.data == "anon_edit_skip_timeout")
+async def cb_anon_edit_skip_timeout(callback: CallbackQuery, state: FSMContext):
+    """
+    Запрос изменения времени авто-скипа (/next).
+    """
+    await state.set_state(AnonChatStates.waiting_for_skip_timeout)
+    prompt = (
+        "⏱ <b>Настройка времени авто-скипа (/next)</b>\n\n"
+        "Введите время в секундах (от <code>5</code> до <code>300</code>), через которое бот автоматически отправит <code>/next</code> и перейдет к следующему собеседнику, если текущий собеседник не написал триггер и не пропустил чат сам:\n\n"
+        "<i>Например: <code>15</code> или <code>20</code></i>"
+    )
+    try:
+        await callback.message.edit_text(prompt, reply_markup=get_cancel_anon_kb(), parse_mode="HTML")
+    except Exception:
+        pass
+    await callback.answer()
+
+@router.message(AnonChatStates.waiting_for_skip_timeout)
+async def process_anon_skip_timeout_input(message: Message, state: FSMContext):
+    """
+    Сохранение нового времени авто-скипа (/next).
+    """
+    raw_val = (message.text or "").strip()
+    if not raw_val.isdigit():
+        await message.answer(
+            "❌ Введите целое число секунд (например: <code>20</code>):",
+            reply_markup=get_cancel_anon_kb(),
+            parse_mode="HTML",
+        )
+        return
+
+    sec = int(raw_val)
+    if sec < 5 or sec > 300:
+        await message.answer(
+            "❌ Значение должно быть в диапазоне от <b>5</b> до <b>300</b> секунд. Попробуйте снова:",
+            reply_markup=get_cancel_anon_kb(),
+            parse_mode="HTML",
+        )
+        return
+
+    user_id = message.from_user.id
+    async with get_session() as session:
+        set_stmt = select(AnonChatSettings).where(AnonChatSettings.user_id == user_id)
+        settings = (await session.execute(set_stmt)).scalar_one_or_none()
+        if settings:
+            settings.auto_skip_seconds = sec
+        else:
+            session.add(AnonChatSettings(user_id=user_id, auto_skip_seconds=sec))
+
+    await state.clear()
+    await message.answer(f"✅ <b>Время авто-скипа (/next) установлено на: <code>{sec} сек.</code>!</b>", parse_mode="HTML")
     text, kb = await render_anon_chat_view(user_id)
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 

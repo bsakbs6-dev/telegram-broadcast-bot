@@ -163,7 +163,8 @@ class AnonChatWorkerService:
             has_sent_offer = False
 
             # Инициализируем диалог — отправляем /search
-            await client.send_message(ANON_BOT_USERNAME, "/search")
+            init_msg = await client.send_message(ANON_BOT_USERNAME, "/search")
+            last_msg_id = max(last_msg_id, init_msg.id)
             state = "SEARCHING"
             search_started_time = asyncio.get_event_loop().time()
             await asyncio.sleep(2)
@@ -180,6 +181,7 @@ class AnonChatWorkerService:
                     offer_text = settings.message_text or "Привет! Интересует? Напиши +"
                     trigger_sym = (settings.trigger_symbol or "+").strip().lower()
                     delay_sec = max(1, settings.delay_seconds)
+                    auto_skip_sec = max(5, getattr(settings, "auto_skip_seconds", 20) or 20)
 
                 # 2. Получаем новые сообщения от @AnonRuBot
                 try:
@@ -195,17 +197,21 @@ class AnonChatWorkerService:
                     for msg in batch:
                         last_msg_id = max(last_msg_id, msg.id)
 
-                        # Если это наше сообщение (исходящее или от нашего user_id) — отключаем авто-скип и пропускаем
-                        if msg.outgoing or (msg.from_user and msg.from_user.id == my_id):
-                            chat_started_time = 0
-                            continue
-
                         text = (msg.text or "").strip()
                         lower_text = text.lower()
 
-                        # Если текст полностью или частично совпадает с нашим оффером — это наше сообщение
-                        if text == offer_text or lower_text == offer_text.lower().strip() or "отправь +" in lower_text or "пишите +" in lower_text:
+                        # Если это наше сообщение (исходящее или от нашего user_id)
+                        if msg.outgoing or (msg.from_user and msg.from_user.id == my_id):
+                            # Игнорируем системные команды воркера и наш собственный оффер (НЕ сбрасываем таймер авто-скипа!)
+                            if lower_text in ("/search", "/next", "/stop") or text == offer_text or lower_text == offer_text.lower().strip():
+                                continue
+                            # Если владелец аккаунта сам вручную написал сообщение в чат — не скипаем
+                            state = "LEAD_ACTIVE"
                             chat_started_time = 0
+                            continue
+
+                        # Если текст полностью совпадает с нашим оффером — пропускаем без сброса таймера
+                        if text == offer_text or lower_text == offer_text.lower().strip():
                             continue
 
                         # 0. Проверяем сообщение о БАНЕ / временном ограничении в @AnonRuBot!
@@ -251,7 +257,6 @@ class AnonChatWorkerService:
                         if is_match_found:
                             state = "CHATTING"
                             has_sent_offer = False
-                            chat_started_time = asyncio.get_event_loop().time()
                             search_started_time = 0
 
                             # Фиксируем статистику найденных диалогов
@@ -266,8 +271,11 @@ class AnonChatWorkerService:
                             await asyncio.sleep(1.5)  # естественная пауза 1.5 сек
 
                             if not has_sent_offer:
-                                await client.send_message(ANON_BOT_USERNAME, offer_text)
+                                sent_offer = await client.send_message(ANON_BOT_USERNAME, offer_text)
+                                last_msg_id = max(last_msg_id, sent_offer.id)
                                 has_sent_offer = True
+
+                            chat_started_time = asyncio.get_event_loop().time()
                             continue
 
                         # Б) Собеседник отключился / скипнул
@@ -278,7 +286,8 @@ class AnonChatWorkerService:
                             chat_started_time = 0
                             search_started_time = asyncio.get_event_loop().time()
                             await asyncio.sleep(delay_sec)
-                            await client.send_message(ANON_BOT_USERNAME, "/next")
+                            sent_next = await client.send_message(ANON_BOT_USERNAME, "/next")
+                            last_msg_id = max(last_msg_id, sent_next.id)
                             continue
 
                         # В) Бот предлагает начать поиск
@@ -288,7 +297,8 @@ class AnonChatWorkerService:
                             chat_started_time = 0
                             search_started_time = asyncio.get_event_loop().time()
                             await asyncio.sleep(delay_sec)
-                            await client.send_message(ANON_BOT_USERNAME, "/search")
+                            sent_search = await client.send_message(ANON_BOT_USERNAME, "/search")
+                            last_msg_id = max(last_msg_id, sent_search.id)
                             continue
 
                         # Г) Пропускаем системные рекламы и опросы от самого AnonRuBot
@@ -297,9 +307,6 @@ class AnonChatWorkerService:
 
                         # Д) Реальное входящее сообщение от СОБЕСЕДНИКА!
                         elif state in ("CHATTING", "LEAD_ACTIVE") and not is_match_found and not is_partner_left and not is_search_prompt:
-                            # Как только собеседник ответил хоть что-то — отключаем авто-скип /next!
-                            chat_started_time = 0
-
                             # Проверяем наличие триггера (например, '+')
                             is_trigger_hit = False
                             if trigger_sym == "+":
@@ -309,6 +316,7 @@ class AnonChatWorkerService:
 
                             if is_trigger_hit:
                                 state = "LEAD_ACTIVE"  # Фиксируем активный диалог с лидом
+                                chat_started_time = 0  # Отключаем авто-скип для пойманного лида
                                 logger.info(f"🎯 LEAD CAPTURED for user {user_id}! Partner replied: {text}")
                                 now = datetime.utcnow()
 
@@ -345,23 +353,25 @@ class AnonChatWorkerService:
                 except Exception as loop_err:
                     logger.error(f"Error checking AnonChat messages for user {user_id}: {loop_err}")
 
-                # Watchdog поиска: если поиск завис более чем на 35 секунд без ответа — отправляем /search повторно
+                # Watchdog поиска: если поиск завис более чем на 35 секунд без ответа — отправляем /next повторно
                 if state == "SEARCHING" and search_started_time > 0:
                     if (asyncio.get_event_loop().time() - search_started_time) > 35:
-                        logger.info(f"Search watchdog timeout (35s) for user {user_id}. Re-triggering /search...")
+                        logger.info(f"Search watchdog timeout (35s) for user {user_id}. Re-triggering /next...")
                         search_started_time = asyncio.get_event_loop().time()
-                        await client.send_message(ANON_BOT_USERNAME, "/search")
+                        sent_wd = await client.send_message(ANON_BOT_USERNAME, "/next")
+                        last_msg_id = max(last_msg_id, sent_wd.id)
 
-                # Таймаут неактивности: скипаем диалог ТОЛЬКО если собеседник вообще ничего не ответил за 45 секунд
+                # Авто-скип (/next): если за auto_skip_sec секунд собеседник не написал триггер и не пропустил чат сам
                 if state == "CHATTING" and chat_started_time > 0:
                     elapsed = asyncio.get_event_loop().time() - chat_started_time
-                    if elapsed > 45:
-                        logger.info(f"Inactivity timeout (45s, no reply from partner) for user {user_id}. Skipping to next...")
+                    if elapsed >= auto_skip_sec:
+                        logger.info(f"Auto-skip timeout ({auto_skip_sec}s) for user {user_id}. Skipping to next (/next)...")
                         state = "SEARCHING"
                         has_sent_offer = False
                         chat_started_time = 0
                         search_started_time = asyncio.get_event_loop().time()
-                        await client.send_message(ANON_BOT_USERNAME, "/next")
+                        sent_next = await client.send_message(ANON_BOT_USERNAME, "/next")
+                        last_msg_id = max(last_msg_id, sent_next.id)
 
                 await asyncio.sleep(2)  # опрос каждые 2 секунды
 

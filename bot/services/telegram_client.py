@@ -4,8 +4,10 @@ from typing import List, Optional, Tuple, Dict, Any
 from pyrogram import Client, utils, raw
 from pyrogram.enums import ChatType, ChatMemberStatus
 
-# Патч для поддержки 64-битных ID каналов Telegram в Pyrogram
-utils.MIN_CHANNEL_ID = -1009999999999999
+from bot.services.pyrogram_patches import apply_pyrogram_patches
+
+# Применяем патчи для 64-битных ID каналов и безопасной пагинации get_dialogs
+apply_pyrogram_patches()
 from pyrogram.errors import (
     FloodWait,
     ChatWriteForbidden,
@@ -88,58 +90,73 @@ class TelegramClientService:
         try:
             await client.connect()
             me = await client.get_me()
+            my_id = getattr(me, "id", None) if me else None
             found_chats: List[Dict[str, Any]] = []
             seen_chat_ids = set()
 
             async for dialog in client.get_dialogs():
-                chat = dialog.chat
-                if not chat or chat.id in seen_chat_ids:
-                    continue
+                try:
+                    chat = getattr(dialog, "chat", None)
+                    if not chat or not getattr(chat, "id", None) or chat.id in seen_chat_ids:
+                        continue
 
-                members_count = getattr(chat, "members_count", None)
-                can_post = False
-                chat_type_str = "group"
+                    chat_id = chat.id
+                    chat_type = getattr(chat, "type", None)
+                    members_count = getattr(chat, "members_count", None)
+                    can_post = False
+                    chat_type_str = "group"
 
-                # 1. Каналы-трансляторы (Channel)
-                if chat.type == ChatType.CHANNEL:
-                    chat_type_str = "channel"
-                    try:
-                        # Проверяем статус создателя/администратора в канале
-                        member = await client.get_chat_member(chat.id, me.id)
-                        if member.status in [ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR]:
-                            if member.status == ChatMemberStatus.OWNER or (member.privileges and member.privileges.can_post_messages):
+                    # 1. Каналы-трансляторы (Channel)
+                    if chat_type == ChatType.CHANNEL:
+                        chat_type_str = "channel"
+                        if my_id:
+                            try:
+                                # Проверяем статус создателя/администратора в канале
+                                member = await client.get_chat_member(chat_id, my_id)
+                                if member and getattr(member, "status", None) in [ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR]:
+                                    privileges = getattr(member, "privileges", None)
+                                    can_post_msg = getattr(privileges, "can_post_messages", False) if privileges else False
+                                    if member.status == ChatMemberStatus.OWNER or can_post_msg:
+                                        can_post = True
+                            except Exception:
+                                pass
+
+                    # 2. Супергруппы и обычные группы (Supergroup / Group)
+                    elif chat_type in [ChatType.SUPERGROUP, ChatType.GROUP]:
+                        chat_type_str = "supergroup" if chat_type == ChatType.SUPERGROUP else "group"
+                        
+                        # Проверяем количество участников (от 5000)
+                        if members_count is None:
+                            try:
+                                full_chat = await client.get_chat(chat_id)
+                                members_count = getattr(full_chat, "members_count", 0)
+                            except Exception:
+                                members_count = 0
+
+                        # Фильтр: только группы от 5000 участников
+                        if members_count and members_count >= 5000:
+                            # Проверяем, не заблокирована ли отправка сообщений для участников
+                            permissions = getattr(chat, "permissions", None)
+                            can_send = getattr(permissions, "can_send_messages", True) if permissions is not None else True
+                            if can_send:
                                 can_post = True
-                    except Exception:
-                        pass
 
-                # 2. Супергруппы и обычные группы (Supergroup / Group)
-                elif chat.type in [ChatType.SUPERGROUP, ChatType.GROUP]:
-                    chat_type_str = "supergroup" if chat.type == ChatType.SUPERGROUP else "group"
-                    
-                    # Проверяем количество участников (от 5000)
-                    if members_count is None:
-                        try:
-                            full_chat = await client.get_chat(chat.id)
-                            members_count = getattr(full_chat, "members_count", 0)
-                        except Exception:
-                            members_count = 0
-
-                    # Фильтр: только группы от 5000 участников
-                    if members_count and members_count >= 5000:
-                        # Проверяем, не заблокирована ли отправка сообщений для участников
-                        if chat.permissions is None or chat.permissions.can_send_messages:
-                            can_post = True
-
-                if can_post:
-                    seen_chat_ids.add(chat.id)
-                    title = chat.title or (f"{chat.first_name or ''} {chat.last_name or ''}").strip() or f"Chat {chat.id}"
-                    found_chats.append({
-                        "chat_id": chat.id,
-                        "title": title,
-                        "username": chat.username,
-                        "chat_type": chat_type_str,
-                        "members_count": members_count,
-                    })
+                    if can_post:
+                        seen_chat_ids.add(chat_id)
+                        first_name = getattr(chat, "first_name", "") or ""
+                        last_name = getattr(chat, "last_name", "") or ""
+                        fallback_title = f"{first_name} {last_name}".strip() or f"Chat {chat_id}"
+                        title = getattr(chat, "title", None) or fallback_title
+                        found_chats.append({
+                            "chat_id": chat_id,
+                            "title": title,
+                            "username": getattr(chat, "username", None),
+                            "chat_type": chat_type_str,
+                            "members_count": members_count,
+                        })
+                except Exception as item_err:
+                    logger.warning(f"Error processing dialog in scan: {item_err}")
+                    continue
 
             await client.disconnect()
 

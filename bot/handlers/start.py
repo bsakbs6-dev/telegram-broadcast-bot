@@ -73,6 +73,8 @@ async def render_main_menu_text(user_id: int) -> str:
 from bot.services.subscription_service import subscription_service
 from bot.keyboards.subscription_kb import get_subscription_gate_kb
 
+from bot.database.db import get_session, is_admin_or_super
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext, bot: Bot):
     """
@@ -80,9 +82,11 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
     """
     await state.clear()
     user_id = message.from_user.id
-    is_admin = (user_id == config.ADMIN_ID)
 
-    # Проверка обязательной подписки
+    async with get_session() as session:
+        is_admin = await is_admin_or_super(session, user_id)
+
+    # Проверка обязательной подписки (для обычных пользователей)
     if not is_admin and await subscription_service.is_gate_enabled():
         is_sub, unsub = await subscription_service.check_user_subscription(bot, user_id)
         if not is_sub:
@@ -108,7 +112,9 @@ async def cb_main_menu(callback: CallbackQuery, state: FSMContext, bot: Bot):
     """
     await state.clear()
     user_id = callback.from_user.id
-    is_admin = (user_id == config.ADMIN_ID)
+
+    async with get_session() as session:
+        is_admin = await is_admin_or_super(session, user_id)
 
     # Проверка обязательной подписки
     if not is_admin and await subscription_service.is_gate_enabled():
