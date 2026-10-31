@@ -415,7 +415,8 @@ async def cb_admin_sessions_list(callback: CallbackQuery):
         InlineKeyboardButton(text="✏️ Изменить никнейм всем аккаунтам", callback_data="admin_rename_all"),
     ])
     keyboard.append([
-        InlineKeyboardButton(text="⚡️ Спам в группу всеми аккаунтами", callback_data="admin_group_spam_start"),
+        InlineKeyboardButton(text="➕ Вступить в группу всем акк", callback_data="admin_join_group_all"),
+        InlineKeyboardButton(text="⚡️ Спам в группу всеми акк", callback_data="admin_group_spam_start"),
     ])
     keyboard.append([
         InlineKeyboardButton(text="⬅️ В панель админа", callback_data="menu_admin")
@@ -717,6 +718,125 @@ async def process_single_nickname_input(message: Message, state: FSMContext):
         await status_msg.edit_text(result_text, reply_markup=reply_kb, parse_mode="HTML")
     except Exception:
         await message.answer(result_text, reply_markup=reply_kb, parse_mode="HTML")
+
+# =========================================================================
+# ВСТУПЛЕНИЕ ВСЕХ АККАУНТОВ В ГРУППУ / КАНАЛ (ПРИВАТНЫЕ И ПУБЛИЧНЫЕ)
+# =========================================================================
+
+@router.callback_query(F.data == "admin_join_group_all")
+async def cb_admin_join_group_all(callback: CallbackQuery, state: FSMContext):
+    is_adm, is_super, admin = await is_admin_check(callback.from_user.id)
+    if not is_adm or (not is_super and not admin.can_view_sessions and not admin.can_manage_broadcasts):
+        await callback.answer("⛔️ Недостаточно прав.", show_alert=True)
+        return
+
+    async with get_session() as session:
+        stmt = select(func.count(UserSession.user_id)).where(
+            (UserSession.is_active == True) | (UserSession.is_active == 1) | (UserSession.is_active.is_(None))
+        )
+        sess_count = (await session.execute(stmt)).scalar() or 0
+
+    if sess_count == 0:
+        await callback.answer("❌ В базе нет активных привязанных аккаунтов!", show_alert=True)
+        return
+
+    await state.set_state(AdminStates.waiting_for_join_group_target)
+
+    text = (
+        "➕ <b>Присоединение всех аккаунтов к группе или каналу</b>\n\n"
+        f"📱 Доступно активных аккаунтов: <b>{sess_count}</b>\n\n"
+        "Отправьте ссылку на группу или канал:\n"
+        "• <b>Приватная группа (инвайт-ссылка):</b> <code>https://t.me/+AbCdEfGh123</code> или <code>https://t.me/joinchat/...</code>\n"
+        "• <b>Публичная группа / канал:</b> <code>@group_name</code> или <code>https://t.me/group_name</code>\n"
+        "• <b>По ID чата:</b> <code>-1001234567890</code>\n\n"
+        "<i>Поддерживаются обычные группы (любого размера от 1 участника), приватные чаты и супергруппы.</i>"
+    )
+
+    await callback.message.edit_text(text, reply_markup=get_cancel_admin_kb(), parse_mode="HTML")
+    await callback.answer()
+
+@router.message(AdminStates.waiting_for_join_group_target)
+async def process_join_group_all_input(message: Message, state: FSMContext):
+    is_adm, is_super, admin = await is_admin_check(message.from_user.id)
+    if not is_adm or (not is_super and not admin.can_view_sessions and not admin.can_manage_broadcasts):
+        await message.answer("⛔️ Недостаточно прав.")
+        await state.clear()
+        return
+
+    raw_target = message.text.strip() if message.text else ""
+    if not raw_target:
+        await message.answer(
+            "❌ Ссылка не может быть пустой. Отправьте ссылку на группу:",
+            reply_markup=get_cancel_admin_kb(),
+            parse_mode="HTML"
+        )
+        return
+
+    await state.clear()
+
+    status_msg = await message.answer(
+        "⏳ <b>Подключение аккаунтов к группе через MTProto...</b>\n\n"
+        f"📍 Цель: <code>{raw_target}</code>\n"
+        "<i>Пожалуйста, подождите...</i>",
+        parse_mode="HTML"
+    )
+
+    success_cnt, error_cnt, chat_title, details = await TelegramClientService.join_all_accounts_to_chat(raw_target)
+
+    total_accs = success_cnt + error_cnt
+    report_lines = [
+        "✅ <b>Вступление в группу завершено!</b>\n",
+        f"📍 <b>Группа:</b> {chat_title}",
+        f"📊 <b>Сводка:</b>",
+        f"• Всего обработано: <b>{total_accs}</b>",
+        f"• Успешно (вступили / уже состоят): <b>{success_cnt}</b>",
+        f"• Ошибок: <b>{error_cnt}</b>\n",
+        "<b>📋 Детализация по аккаунтам:</b>"
+    ]
+
+    for item in details:
+        phone = item.get("phone") or "—"
+        name = item.get("name") or "Без имени"
+        st = item.get("status") or ""
+        icon = "✅" if item.get("success") else "❌"
+        report_lines.append(f"• <code>{phone}</code> ({name}): {icon} {st}")
+
+    report_text = "\n".join(report_lines)
+
+    keyboard = [
+        [InlineKeyboardButton(text="⚡️ Начать спам в эту группу", callback_data=f"spam_start_with_target:{raw_target}")],
+        [InlineKeyboardButton(text="📱 Список сессий", callback_data="admin_sessions_list")],
+        [InlineKeyboardButton(text="⬅️ В панель админа", callback_data="menu_admin")]
+    ]
+    reply_kb = InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    if len(report_text) > 4000:
+        report_text = report_text[:3900] + "\n\n<i>[Список сокращен...]</i>"
+
+    try:
+        await status_msg.edit_text(report_text, reply_markup=reply_kb, parse_mode="HTML")
+    except Exception:
+        await message.answer(report_text, reply_markup=reply_kb, parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("spam_start_with_target:"))
+async def cb_spam_start_with_target(callback: CallbackQuery, state: FSMContext):
+    is_adm, is_super, admin = await is_admin_check(callback.from_user.id)
+    if not is_adm or (not is_super and not admin.can_view_sessions and not admin.can_manage_broadcasts):
+        await callback.answer("⛔️ Недостаточно прав.", show_alert=True)
+        return
+
+    target = callback.data.split(":", 1)[1]
+    await state.update_data(spam_target=target)
+    await state.set_state(AdminStates.waiting_for_spam_text)
+
+    text = (
+        "✍️ <b>Текст сообщения для отправки</b> (Шаг 2/4)\n\n"
+        f"📍 Целевая группа: <code>{target}</code>\n\n"
+        "Введите текст сообщения, которое все аккаунты будут отправлять в группу:"
+    )
+
+    await callback.message.edit_text(text, reply_markup=get_cancel_admin_kb(), parse_mode="HTML")
+    await callback.answer()
 
 # =========================================================================
 # МАССОВАЯ ОТПРАВКА СООБЩЕНИЙ (СПАМ) В ГРУППУ ВСЕМИ АККАУНТАМИ

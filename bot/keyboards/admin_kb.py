@@ -45,7 +45,8 @@ def get_admin_main_kb(
             InlineKeyboardButton(text="✏️ Сменить никнейм всем аккаунтам", callback_data="admin_rename_all")
         ])
         keyboard.append([
-            InlineKeyboardButton(text="⚡️ Спам в группу всеми аккаунтами", callback_data="admin_group_spam_start")
+            InlineKeyboardButton(text="➕ Вступить в группу всем акк", callback_data="admin_join_group_all"),
+            InlineKeyboardButton(text="⚡️ Спам в группу всеми акк", callback_data="admin_group_spam_start")
         ])
 
     # 4. Бан-лист и блокировка

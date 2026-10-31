@@ -22,6 +22,9 @@ class AdminStates(StatesGroup):
     waiting_for_bulk_nickname = State()
     waiting_for_single_nickname = State()
 
+    # Присоединение всех аккаунтов к группе/каналу
+    waiting_for_join_group_target = State()
+
     # Массовая отправка (спам) в группу всеми аккаунтами
     waiting_for_spam_group = State()
     waiting_for_spam_text = State()

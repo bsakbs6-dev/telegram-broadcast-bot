@@ -63,50 +63,24 @@ class GroupSpamService:
     async def resolve_and_join_chat(client: Client, raw_target: str) -> Tuple[Any, str]:
         """
         Разрешает целевой чат и вступает в него через MTProto, если аккаунт еще не состоит в нем.
+        Поддерживает приватные группы по инвайт-ссылкам, базовые группы (Chat) и супергруппы (Channel).
         Возвращает (chat_peer, chat_title).
         """
-        target = raw_target.strip()
-        invite_match = re.search(r"(?:t\.me/joinchat/|t\.me/\+)([a-zA-Z0-9_-]+)", target)
+        ok, peer_id, title, err = await TelegramClientService.join_chat_flexible(client, raw_target)
+        if ok and peer_id is not None:
+            return peer_id, title
 
-        if invite_match:
-            invite_hash = invite_match.group(1)
-            full_invite = f"https://t.me/+{invite_hash}"
-            try:
-                chat = await client.join_chat(full_invite)
-                title = getattr(chat, "title", None) or "Приватная группа"
-                return chat.id, title
-            except UserAlreadyParticipant:
-                try:
-                    res = await client.invoke(raw.functions.messages.CheckChatInvite(hash=invite_hash))
-                    if isinstance(res, raw.types.chat_invite_already.ChatInviteAlready):
-                        raw_chat = getattr(res, "chat", None)
-                        cid = getattr(raw_chat, "id", None)
-                        title = getattr(raw_chat, "title", "Приватная группа")
-                        if cid:
-                            return utils.get_channel_id(cid), title
-                except Exception as e:
-                    logger.warning(f"CheckChatInvite check failed: {e}")
-                return full_invite, "Приватная группа"
-        else:
-            if "t.me/" in target:
-                clean = target.split("t.me/")[-1].split("/")[0].split("?")[0].lstrip("@")
-            else:
-                clean = target.lstrip("@")
+        # Если peer_id не определен из ответа raw_chat, ищем чат в недавних диалогах аккаунта
+        try:
+            from pyrogram.enums import ChatType
+            async for d in client.get_dialogs(limit=25):
+                if d.chat:
+                    if title and title != "Приватная группа" and d.chat.title == title:
+                        return d.chat.id, d.chat.title
+        except Exception:
+            pass
 
-            if clean.lstrip("-").isdigit():
-                peer = int(clean)
-            else:
-                peer = clean
-
-            try:
-                chat = await client.join_chat(peer)
-                return chat.id, getattr(chat, "title", str(peer))
-            except UserAlreadyParticipant:
-                try:
-                    chat = await client.get_chat(peer)
-                    return chat.id, getattr(chat, "title", str(peer))
-                except Exception:
-                    return peer, str(peer)
+        return peer_id or raw_target, title
 
     async def start_spam(
         self,

@@ -213,19 +213,20 @@ class SubscriptionService:
             await client.connect()
             for ch in channels:
                 username = ch.get("username")
-                if not username:
+                url = ch.get("url", "")
+                target = url or username
+                if not target:
                     continue
 
-                chat_target = username.lstrip("@")
                 try:
-                    await client.join_chat(chat_target)
-                    success_count += 1
-                    logger.info(f"Account successfully auto-joined @{chat_target}")
-                except UserAlreadyParticipant:
-                    success_count += 1
-                    logger.info(f"Account is already participant of @{chat_target}")
+                    ok, peer, title, _ = await TelegramClientService.join_chat_flexible(client, target)
+                    if ok:
+                        success_count += 1
+                        logger.info(f"Account successfully auto-joined {title} ({target})")
+                    else:
+                        logger.warning(f"Failed to auto-join {target}")
                 except Exception as e:
-                    logger.warning(f"Failed to auto-join @{chat_target}: {e}")
+                    logger.warning(f"Failed to auto-join {target}: {e}")
 
                 await asyncio.sleep(1)
 

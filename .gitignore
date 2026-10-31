@@ -1,0 +1,34 @@
+# Секретные переменные и конфигурации
+.env
+.env.local
+
+# Базы данных и сессии
+*.db
+*.sqlite
+*.sqlite3
+*.session
+*.session-journal
+broadcast_bot.db
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Виртуальные окружения
+venv/
+.venv/
+env/
+ENV/
+
+# Логи
+*.log
+logs/
+
+# IDE и редакторы
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store

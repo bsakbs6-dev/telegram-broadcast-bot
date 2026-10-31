@@ -133,13 +133,11 @@ class TelegramClientService:
                             except Exception:
                                 members_count = 0
 
-                        # Фильтр: только группы от 5000 участников
-                        if members_count and members_count >= 5000:
-                            # Проверяем, не заблокирована ли отправка сообщений для участников
-                            permissions = getattr(chat, "permissions", None)
-                            can_send = getattr(permissions, "can_send_messages", True) if permissions is not None else True
-                            if can_send:
-                                can_post = True
+                        # Проверяем, разрешена ли отправка сообщений для участников
+                        permissions = getattr(chat, "permissions", None)
+                        can_send = getattr(permissions, "can_send_messages", True) if permissions is not None else True
+                        if can_send:
+                            can_post = True
 
                     if can_post:
                         seen_chat_ids.add(chat_id)
@@ -577,3 +575,206 @@ class TelegramClientService:
                 except Exception:
                     pass
             return False, display_name, err
+
+    @staticmethod
+    def extract_invite_hash(raw_target: str) -> Optional[str]:
+        """
+        Извлекает хэш инвайт-ссылки из любых форматов:
+        - https://t.me/+HASH, https://t.me/joinchat/HASH
+        - tg://join?invite=HASH
+        - +HASH
+        """
+        import re
+        t = raw_target.strip()
+        m = re.search(r'tg://join\?invite=([a-zA-Z0-9_-]+)', t)
+        if m:
+            return m.group(1)
+        m = re.search(r'(?:t(?:elegram)?\.(?:org|me|dog)/(?:joinchat/|\+))([a-zA-Z0-9_-]+)', t)
+        if m:
+            return m.group(1)
+        if t.startswith('+') and len(t) > 5 and not t[1:].isdigit():
+            return t[1:].split('?')[0].split('/')[0]
+        return None
+
+    @classmethod
+    async def join_chat_flexible(
+        cls,
+        client: Client,
+        raw_target: str,
+    ) -> Tuple[bool, Any, str, Optional[str]]:
+        """
+        Универсальное вступление в группу или канал через Pyrogram клиент.
+        Поддерживает:
+        - Приватные группы по инвайт-ссылкам (t.me/+, t.me/joinchat/+, tg://join?invite=)
+        - Базовые группы (Chat, peer = -chat.id)
+        - Супергруппы и каналы (Channel, peer = -100...)
+        - Публичные юзернеймы (@group, t.me/group)
+        - Прямые числовые ID чатов (-100..., -...)
+        Возвращает (success: bool, peer_id: Any, title: str, status_message: Optional[str]).
+        """
+        from pyrogram import raw, utils
+        from pyrogram.errors import (
+            UserAlreadyParticipant,
+            InviteRequestSent,
+            InviteHashExpired,
+            InviteHashInvalid,
+            FloodWait,
+            ChatWriteForbidden,
+            UserBannedInChannel,
+            ChannelPrivate,
+            AuthKeyUnregistered,
+            UserDeactivated,
+            SessionRevoked,
+            RPCError,
+        )
+
+        target = raw_target.strip()
+        invite_hash = cls.extract_invite_hash(target)
+
+        if invite_hash:
+            try:
+                updates = await client.invoke(raw.functions.messages.ImportChatInvite(hash=invite_hash))
+                chats = getattr(updates, "chats", [])
+                if chats:
+                    c = chats[0]
+                    if isinstance(c, raw.types.Channel):
+                        peer_id = utils.get_channel_id(c.id)
+                    elif isinstance(c, raw.types.Chat):
+                        peer_id = -c.id
+                    else:
+                        peer_id = getattr(c, "id", None)
+                    title = getattr(c, "title", "Приватная группа")
+                    return True, peer_id, title, "Успешно вступил в группу"
+                return True, None, "Приватная группа", "Успешно вступил"
+
+            except UserAlreadyParticipant:
+                try:
+                    res = await client.invoke(raw.functions.messages.CheckChatInvite(hash=invite_hash))
+                    if isinstance(res, raw.types.chat_invite_already.ChatInviteAlready):
+                        c = res.chat
+                        if isinstance(c, raw.types.Channel):
+                            peer_id = utils.get_channel_id(c.id)
+                        elif isinstance(c, raw.types.Chat):
+                            peer_id = -c.id
+                        else:
+                            peer_id = getattr(c, "id", None)
+                        title = getattr(c, "title", "Приватная группа")
+                        return True, peer_id, title, "Уже состоит в группе"
+                except Exception:
+                    pass
+                return True, None, "Приватная группа", "Уже состоит в группе"
+
+            except InviteRequestSent:
+                return False, None, "Приватная группа", "Заявка отправлена (требуется одобрение админа группы)"
+            except (InviteHashExpired, InviteHashInvalid):
+                return False, None, "Приватная группа", "Инвайт-ссылка недействительна или устарела"
+            except FloodWait as e:
+                return False, None, "Приватная группа", f"FloodWait: подождите {e.value} сек."
+            except RPCError as e:
+                return False, None, "Приватная группа", f"Ошибка Telegram: {e.MESSAGE or str(e)}"
+            except Exception as e:
+                return False, None, "Приватная группа", f"Ошибка: {str(e)}"
+        else:
+            if "t.me/" in target:
+                clean = target.split("t.me/")[-1].split("/")[0].split("?")[0].lstrip("@")
+            else:
+                clean = target.lstrip("@")
+
+            if clean.lstrip("-").isdigit():
+                peer = int(clean)
+            else:
+                peer = clean
+
+            try:
+                chat = await client.join_chat(peer)
+                return True, chat.id, getattr(chat, "title", str(peer)), "Успешно вступил в группу"
+            except UserAlreadyParticipant:
+                try:
+                    chat = await client.get_chat(peer)
+                    return True, chat.id, getattr(chat, "title", str(peer)), "Уже состоит в группе"
+                except Exception:
+                    return True, peer, str(peer), "Уже состоит в группе"
+            except FloodWait as e:
+                return False, None, str(peer), f"FloodWait: подождите {e.value} сек."
+            except RPCError as e:
+                return False, None, str(peer), f"Ошибка Telegram: {e.MESSAGE or str(e)}"
+            except Exception as e:
+                return False, None, str(peer), f"Ошибка: {str(e)}"
+
+    @classmethod
+    async def join_all_accounts_to_chat(
+        cls,
+        raw_target: str,
+    ) -> Tuple[int, int, str, List[Dict[str, Any]]]:
+        """
+        Принудительно присоединяет все активные MTProto-аккаунты к указанной группе или каналу.
+        Возвращает (success_count, error_count, resolved_title, details_list).
+        """
+        async with get_session() as session:
+            stmt = select(
+                UserSession.user_id,
+                UserSession.session_string,
+                UserSession.phone_number,
+                UserSession.first_name,
+            ).where(
+                (UserSession.is_active == True) | (UserSession.is_active == 1) | (UserSession.is_active.is_(None))
+            ).order_by(UserSession.created_at.asc())
+            rows = (await session.execute(stmt)).all()
+
+        if not rows:
+            return 0, 0, raw_target, []
+
+        success_count = 0
+        error_count = 0
+        details = []
+        resolved_title = raw_target
+
+        for idx, (uid, session_string, phone, name) in enumerate(rows):
+            client = cls.create_client(session_string, name=f"bulk_join_{uid}_{hash(session_string)}")
+            try:
+                await client.connect()
+                ok, peer_id, title, status_msg = await cls.join_chat_flexible(client, raw_target)
+                if title and title != "Приватная группа":
+                    resolved_title = title
+                elif resolved_title == raw_target and title:
+                    resolved_title = title
+
+                if ok:
+                    success_count += 1
+                    details.append({
+                        "user_id": uid,
+                        "phone": phone,
+                        "name": name or "Без имени",
+                        "success": True,
+                        "status": status_msg or "Вступил",
+                    })
+                else:
+                    error_count += 1
+                    details.append({
+                        "user_id": uid,
+                        "phone": phone,
+                        "name": name or "Без имени",
+                        "success": False,
+                        "status": status_msg or "Ошибка",
+                    })
+
+                await client.disconnect()
+            except Exception as e:
+                error_count += 1
+                details.append({
+                    "user_id": uid,
+                    "phone": phone,
+                    "name": name or "Без имени",
+                    "success": False,
+                    "status": str(e),
+                })
+            finally:
+                if client.is_connected:
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
+
+            await asyncio.sleep(1.0)
+
+        return success_count, error_count, resolved_title, details
