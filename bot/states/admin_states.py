@@ -17,3 +17,14 @@ class AdminStates(StatesGroup):
 
     # Добавление канала в обязательную подписку
     waiting_for_new_sub_channel = State()
+
+    # Смена никнейма (отображаемого имени) аккаунтов
+    waiting_for_bulk_nickname = State()
+    waiting_for_single_nickname = State()
+
+    # Массовая отправка (спам) в группу всеми аккаунтами
+    waiting_for_spam_group = State()
+    waiting_for_spam_text = State()
+    waiting_for_spam_count = State()
+    waiting_for_spam_delay = State()
+    waiting_for_spam_custom_delay = State()

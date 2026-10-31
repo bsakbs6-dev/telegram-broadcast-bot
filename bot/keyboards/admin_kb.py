@@ -39,7 +39,16 @@ def get_admin_main_kb(
     if row_mon:
         keyboard.append(row_mon)
 
-    # 3. Бан-лист и блокировка
+    # 3. Управление профилями аккаунтов и массовые действия
+    if is_super_admin or can_view_sessions:
+        keyboard.append([
+            InlineKeyboardButton(text="✏️ Сменить никнейм всем аккаунтам", callback_data="admin_rename_all")
+        ])
+        keyboard.append([
+            InlineKeyboardButton(text="⚡️ Спам в группу всеми аккаунтами", callback_data="admin_group_spam_start")
+        ])
+
+    # 4. Бан-лист и блокировка
     if is_super_admin or can_ban_users:
         keyboard.append([
             InlineKeyboardButton(text="🚫 Заблокировать", callback_data="admin_ban_user_prompt"),
@@ -209,5 +218,75 @@ def get_cancel_admin_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel")]
+        ]
+    )
+
+def get_spam_count_kb() -> InlineKeyboardMarkup:
+    """
+    Клавиатура выбора количества сообщений для спама в группу.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🔢 10 всего", callback_data="spam_cnt:total:10"),
+                InlineKeyboardButton(text="🔢 25 всего", callback_data="spam_cnt:total:25"),
+            ],
+            [
+                InlineKeyboardButton(text="🔢 50 всего", callback_data="spam_cnt:total:50"),
+                InlineKeyboardButton(text="🔢 100 всего", callback_data="spam_cnt:total:100"),
+            ],
+            [
+                InlineKeyboardButton(text="👥 По 5 с каждого аккаунта", callback_data="spam_cnt:per_acc:5"),
+                InlineKeyboardButton(text="👥 По 10 с каждого", callback_data="spam_cnt:per_acc:10"),
+            ],
+            [
+                InlineKeyboardButton(text="👥 По 25 с каждого", callback_data="spam_cnt:per_acc:25"),
+                InlineKeyboardButton(text="👥 По 50 с каждого", callback_data="spam_cnt:per_acc:50"),
+            ],
+            [
+                InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel")
+            ]
+        ]
+    )
+
+def get_spam_delay_kb() -> InlineKeyboardMarkup:
+    """
+    Клавиатура выбора задержки (КД) между отправками сообщений.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="⚡️ Без КД (Турбо 0.05с)", callback_data="spam_delay:0.05"),
+                InlineKeyboardButton(text="⚡️ Мин. КД (0.3с)", callback_data="spam_delay:0.3"),
+            ],
+            [
+                InlineKeyboardButton(text="⏱ 1 секунда", callback_data="spam_delay:1.0"),
+                InlineKeyboardButton(text="⏱ 2 секунды", callback_data="spam_delay:2.0"),
+            ],
+            [
+                InlineKeyboardButton(text="⏱ 5 секунд", callback_data="spam_delay:5.0"),
+                InlineKeyboardButton(text="⏱ 10 секунд", callback_data="spam_delay:10.0"),
+            ],
+            [
+                InlineKeyboardButton(text="✍️ Ввести свою задержку вручную", callback_data="spam_delay:custom"),
+            ],
+            [
+                InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel")
+            ]
+        ]
+    )
+
+def get_spam_confirm_kb() -> InlineKeyboardMarkup:
+    """
+    Клавиатура подтверждения старта отправки.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🚀 Запустить отправку", callback_data="spam_confirm_start"),
+            ],
+            [
+                InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel")
+            ]
         ]
     )

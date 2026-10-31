@@ -399,11 +399,17 @@ async def cb_admin_sessions_list(callback: CallbackQuery):
             InlineKeyboardButton(text=f"📩 Код: {s.first_name or s.phone_number}", callback_data=f"admin_code:{s.user_id}"),
         ])
         keyboard.append([
+            InlineKeyboardButton(text="✏️ Сменить ник", callback_data=f"admin_rename_one:{s.user_id}"),
             InlineKeyboardButton(text="🚪 Выгнать всех", callback_data=f"admin_kick:{s.user_id}"),
+        ])
+        keyboard.append([
             InlineKeyboardButton(text="🚫 Забанить", callback_data=f"admin_ban_from_sess:{s.user_id}"),
             InlineKeyboardButton(text="🗑 Удалить", callback_data=f"admin_del_sess:{s.user_id}"),
         ])
 
+    keyboard.append([
+        InlineKeyboardButton(text="✏️ Изменить никнейм всем аккаунтам", callback_data="admin_rename_all")
+    ])
     keyboard.append([
         InlineKeyboardButton(text="⬅️ В панель админа", callback_data="menu_admin")
     ])
@@ -503,6 +509,207 @@ async def cb_admin_del_sess(callback: CallbackQuery):
 
     await callback.answer(f"Сессия пользователя {target_uid} удалена!", show_alert=True)
     await cb_admin_sessions_list(callback)
+
+# =========================================================================
+# СМЕНА НИКНЕЙМА (ИМЕНИ ПРОФИЛЯ) АККАУНТОВ
+# =========================================================================
+
+@router.callback_query(F.data == "admin_rename_all")
+async def cb_admin_rename_all(callback: CallbackQuery, state: FSMContext):
+    is_adm, is_super, admin = await is_admin_check(callback.from_user.id)
+    if not is_adm or (not is_super and not admin.can_view_sessions):
+        await callback.answer("⛔️ Недостаточно прав для управления сессиями.", show_alert=True)
+        return
+
+    async with get_session() as session:
+        stmt = select(func.count(UserSession.user_id)).where(
+            (UserSession.is_active == True) | (UserSession.is_active == 1) | (UserSession.is_active.is_(None))
+        )
+        sess_count = (await session.execute(stmt)).scalar() or 0
+
+    if sess_count == 0:
+        await callback.answer("❌ В базе нет активных подключенных аккаунтов!", show_alert=True)
+        return
+
+    await state.set_state(AdminStates.waiting_for_bulk_nickname)
+
+    text = (
+        f"✏️ <b>Изменение никнейма всем привязанным аккаунтам</b>\n\n"
+        f"📱 Найдено активных аккаунтов: <b>{sess_count}</b>\n\n"
+        f"Отправьте новое имя (никнейм) или шаблон, который будет установлен в профиле всех аккаунтов.\n\n"
+        f"💡 <b>Поддерживаемые форматы:</b>\n"
+        f"• <b>Одинаковое имя для всех:</b> <code>Менеджер | FloryShop</code>\n"
+        f"• <b>Автонумерация через <code>{{n}}</code>:</b> <code>Менеджер #{{n}}</code>\n"
+        f"  <i>(аккаунты получат имена: «Менеджер #1», «Менеджер #2» и т.д.)</i>\n"
+        f"• <b>Имя и фамилия в 2 строки:</b>\n"
+        f"  <code>Имя {{n}}</code>\n"
+        f"  <code>Фамилия</code>\n\n"
+        f"<i>Лимит Telegram — до 64 символов на имя и фамилию.</i>"
+    )
+
+    await callback.message.edit_text(text, reply_markup=get_cancel_admin_kb(), parse_mode="HTML")
+    await callback.answer()
+
+@router.message(AdminStates.waiting_for_bulk_nickname)
+async def process_bulk_nickname_input(message: Message, state: FSMContext):
+    is_adm, is_super, admin = await is_admin_check(message.from_user.id)
+    if not is_adm or (not is_super and not admin.can_view_sessions):
+        await message.answer("⛔️ Недостаточно прав.")
+        await state.clear()
+        return
+
+    raw_text = message.text.strip() if message.text else ""
+    if not raw_text:
+        await message.answer(
+            "❌ Никнейм не может быть пустым. Пожалуйста, введите текст:",
+            reply_markup=get_cancel_admin_kb(),
+            parse_mode="HTML"
+        )
+        return
+
+    await state.clear()
+
+    status_msg = await message.answer(
+        "⏳ <b>Запущен процесс смены никнеймов на всех аккаунтах...</b>\n\n"
+        "<i>Подключение к MTProto и обновление профилей, пожалуйста, подождите...</i>",
+        parse_mode="HTML"
+    )
+
+    success_cnt, error_cnt, details = await TelegramClientService.bulk_update_accounts_name(raw_text)
+
+    total_accs = success_cnt + error_cnt
+    report_lines = [
+        "✅ <b>Смена никнеймов завершена!</b>\n",
+        "📊 <b>Сводка:</b>",
+        f"• Всего обработано: <b>{total_accs}</b>",
+        f"• Успешно обновлено: <b>{success_cnt}</b>",
+        f"• Ошибок: <b>{error_cnt}</b>\n",
+        "<b>📋 Результаты по аккаунтам:</b>"
+    ]
+
+    for item in details:
+        phone = item.get("phone") or "—"
+        uid = item.get("user_id")
+        if item.get("success"):
+            new_name = item.get("new_name") or ""
+            report_lines.append(f"• <code>{phone}</code> (ID: <code>{uid}</code>): ✅ «{new_name}»")
+        else:
+            err = item.get("error") or "Ошибка"
+            report_lines.append(f"• <code>{phone}</code> (ID: <code>{uid}</code>): ❌ {err}")
+
+    report_text = "\n".join(report_lines)
+
+    keyboard = [
+        [InlineKeyboardButton(text="📱 Список сессий", callback_data="admin_sessions_list")],
+        [InlineKeyboardButton(text="⬅️ В панель админа", callback_data="menu_admin")]
+    ]
+    reply_kb = InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    if len(report_text) > 4000:
+        await status_msg.delete()
+        chunks = [report_text[i:i+3800] for i in range(0, len(report_text), 3800)]
+        for i, chunk in enumerate(chunks):
+            if i == len(chunks) - 1:
+                await message.answer(chunk, reply_markup=reply_kb, parse_mode="HTML")
+            else:
+                await message.answer(chunk, parse_mode="HTML")
+    else:
+        try:
+            await status_msg.edit_text(report_text, reply_markup=reply_kb, parse_mode="HTML")
+        except Exception:
+            await message.answer(report_text, reply_markup=reply_kb, parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("admin_rename_one:"))
+async def cb_admin_rename_one_prompt(callback: CallbackQuery, state: FSMContext):
+    is_adm, is_super, admin = await is_admin_check(callback.from_user.id)
+    if not is_adm or (not is_super and not admin.can_view_sessions):
+        await callback.answer("⛔️ Недостаточно прав.", show_alert=True)
+        return
+
+    target_uid = int(callback.data.split(":")[1])
+
+    async with get_session() as session:
+        stmt = select(UserSession).where(UserSession.user_id == target_uid)
+        user_sess = (await session.execute(stmt)).scalar_one_or_none()
+
+    if not user_sess:
+        await callback.answer("❌ Сессия не найдена в базе данных!", show_alert=True)
+        return
+
+    await state.update_data(rename_target_uid=target_uid)
+    await state.set_state(AdminStates.waiting_for_single_nickname)
+
+    text = (
+        f"✏️ <b>Изменение никнейма для аккаунта</b>\n\n"
+        f"👤 <b>Текущее имя:</b> {user_sess.first_name or 'Без имени'}\n"
+        f"📞 <b>Номер:</b> <code>{user_sess.phone_number}</code>\n"
+        f"🆔 <b>ID:</b> <code>{user_sess.user_id}</code>\n\n"
+        f"Отправьте новое имя (никнейм) для этого аккаунта:\n"
+        f"<i>(Если указать 2 строки, первая станет именем, вторая — фамилией)</i>"
+    )
+
+    await callback.message.edit_text(text, reply_markup=get_cancel_admin_kb(), parse_mode="HTML")
+    await callback.answer()
+
+@router.message(AdminStates.waiting_for_single_nickname)
+async def process_single_nickname_input(message: Message, state: FSMContext):
+    is_adm, is_super, admin = await is_admin_check(message.from_user.id)
+    if not is_adm or (not is_super and not admin.can_view_sessions):
+        await message.answer("⛔️ Недостаточно прав.")
+        await state.clear()
+        return
+
+    data = await state.get_data()
+    target_uid = data.get("rename_target_uid")
+    if not target_uid:
+        await message.answer("❌ Ошибка: целевой аккаунт не определен.")
+        await state.clear()
+        return
+
+    raw_text = message.text.strip() if message.text else ""
+    if not raw_text:
+        await message.answer(
+            "❌ Никнейм не может быть пустым. Пожалуйста, введите текст:",
+            reply_markup=get_cancel_admin_kb(),
+            parse_mode="HTML"
+        )
+        return
+
+    await state.clear()
+
+    status_msg = await message.answer(
+        "⏳ <b>Обновление профиля аккаунта через MTProto...</b>",
+        parse_mode="HTML"
+    )
+
+    success, display_name, err = await TelegramClientService.update_single_account_name(
+        user_id=target_uid,
+        new_name_raw=raw_text
+    )
+
+    keyboard = [
+        [InlineKeyboardButton(text="📱 К списку сессий", callback_data="admin_sessions_list")],
+        [InlineKeyboardButton(text="⬅️ В панель админа", callback_data="menu_admin")]
+    ]
+    reply_kb = InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    if success:
+        result_text = (
+            f"✅ <b>Никнейм успешно обновлен!</b>\n\n"
+            f"🆔 ID аккаунта: <code>{target_uid}</code>\n"
+            f"👤 Новое имя: <b>{display_name}</b>"
+        )
+    else:
+        result_text = (
+            f"❌ <b>Не удалось обновить никнейм:</b>\n\n"
+            f"🆔 ID аккаунта: <code>{target_uid}</code>\n"
+            f"⚠️ Причина: <code>{err}</code>"
+        )
+
+    try:
+        await status_msg.edit_text(result_text, reply_markup=reply_kb, parse_mode="HTML")
+    except Exception:
+        await message.answer(result_text, reply_markup=reply_kb, parse_mode="HTML")
 
 # =========================================================================
 # СИСТЕМА БЛОКИРОВКИ (БАН-ЛИСТ)
