@@ -40,10 +40,14 @@ from bot.keyboards.admin_kb import (
     get_banned_list_kb,
     get_admins_list_kb,
     get_admin_perms_kb,
+    get_spam_count_kb,
+    get_spam_delay_kb,
+    get_spam_confirm_kb,
 )
 from bot.services.broadcaster import broadcaster
 from bot.services.telegram_client import TelegramClientService
 from bot.services.subscription_service import subscription_service
+from bot.services.group_spam_service import group_spam_service
 from bot.keyboards.subscription_kb import get_admin_auto_sub_kb
 
 router = Router(name="admin_router")
@@ -408,7 +412,10 @@ async def cb_admin_sessions_list(callback: CallbackQuery):
         ])
 
     keyboard.append([
-        InlineKeyboardButton(text="✏️ Изменить никнейм всем аккаунтам", callback_data="admin_rename_all")
+        InlineKeyboardButton(text="✏️ Изменить никнейм всем аккаунтам", callback_data="admin_rename_all"),
+    ])
+    keyboard.append([
+        InlineKeyboardButton(text="⚡️ Спам в группу всеми аккаунтами", callback_data="admin_group_spam_start"),
     ])
     keyboard.append([
         InlineKeyboardButton(text="⬅️ В панель админа", callback_data="menu_admin")
@@ -710,6 +717,293 @@ async def process_single_nickname_input(message: Message, state: FSMContext):
         await status_msg.edit_text(result_text, reply_markup=reply_kb, parse_mode="HTML")
     except Exception:
         await message.answer(result_text, reply_markup=reply_kb, parse_mode="HTML")
+
+# =========================================================================
+# МАССОВАЯ ОТПРАВКА СООБЩЕНИЙ (СПАМ) В ГРУППУ ВСЕМИ АККАУНТАМИ
+# =========================================================================
+
+@router.callback_query(F.data == "admin_group_spam_start")
+async def cb_admin_group_spam_start(callback: CallbackQuery, state: FSMContext):
+    is_adm, is_super, admin = await is_admin_check(callback.from_user.id)
+    if not is_adm or (not is_super and not admin.can_view_sessions and not admin.can_manage_broadcasts):
+        await callback.answer("⛔️ Недостаточно прав.", show_alert=True)
+        return
+
+    if group_spam_service.is_running():
+        await callback.message.edit_text(
+            "⚠️ <b>Внимание:</b> В данный момент уже выполняется отправка сообщений в группу!\n\n"
+            "Дождитесь завершения или принудительно остановите её кнопкой ниже:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🛑 Остановить текущую отправку", callback_data="admin_spam_stop")],
+                [InlineKeyboardButton(text="⬅️ В панель админа", callback_data="menu_admin")]
+            ]),
+            parse_mode="HTML"
+        )
+        await callback.answer()
+        return
+
+    async with get_session() as session:
+        stmt = select(func.count(UserSession.user_id)).where(
+            (UserSession.is_active == True) | (UserSession.is_active == 1) | (UserSession.is_active.is_(None))
+        )
+        sess_count = (await session.execute(stmt)).scalar() or 0
+
+    if sess_count == 0:
+        await callback.answer("❌ В базе нет активных привязанных аккаунтов!", show_alert=True)
+        return
+
+    await state.set_state(AdminStates.waiting_for_spam_group)
+
+    text = (
+        "⚡️ <b>Массовая отправка сообщений в группу</b> (Шаг 1/4)\n\n"
+        f"📱 Доступно активных аккаунтов: <b>{sess_count}</b>\n\n"
+        "Отправьте ссылку на целевую группу, @юзернейм или ID чата:\n"
+        "• Публичная: <code>@group_name</code> или <code>https://t.me/group_name</code>\n"
+        "• Приватная по ссылке: <code>https://t.me/+AbCdEfGh123...</code>\n"
+        "• По ID чата: <code>-1001234567890</code>\n\n"
+        "<i>Все привязанные аккаунты автоматически вступят в эту группу (если ещё не вступили).</i>"
+    )
+
+    await callback.message.edit_text(text, reply_markup=get_cancel_admin_kb(), parse_mode="HTML")
+    await callback.answer()
+
+@router.message(AdminStates.waiting_for_spam_group)
+async def process_spam_group_input(message: Message, state: FSMContext):
+    is_adm, is_super, admin = await is_admin_check(message.from_user.id)
+    if not is_adm or (not is_super and not admin.can_view_sessions and not admin.can_manage_broadcasts):
+        await message.answer("⛔️ Недостаточно прав.")
+        await state.clear()
+        return
+
+    raw_target = message.text.strip() if message.text else ""
+    if not raw_target:
+        await message.answer(
+            "❌ Ссылка или юзернейм группы не могут быть пустыми. Попробуйте еще раз:",
+            reply_markup=get_cancel_admin_kb(),
+            parse_mode="HTML"
+        )
+        return
+
+    await state.update_data(spam_target=raw_target)
+    await state.set_state(AdminStates.waiting_for_spam_text)
+
+    text = (
+        "✍️ <b>Текст сообщения для отправки</b> (Шаг 2/4)\n\n"
+        f"📍 Целевая группа: <code>{raw_target}</code>\n\n"
+        "Введите текст сообщения, которое все аккаунты будут отправлять в группу:"
+    )
+
+    await message.answer(text, reply_markup=get_cancel_admin_kb(), parse_mode="HTML")
+
+@router.message(AdminStates.waiting_for_spam_text)
+async def process_spam_text_input(message: Message, state: FSMContext):
+    is_adm, is_super, admin = await is_admin_check(message.from_user.id)
+    if not is_adm or (not is_super and not admin.can_view_sessions and not admin.can_manage_broadcasts):
+        await message.answer("⛔️ Недостаточно прав.")
+        await state.clear()
+        return
+
+    raw_msg = message.text.strip() if message.text else ""
+    if not raw_msg:
+        await message.answer(
+            "❌ Текст сообщения не может быть пустым. Введите текст:",
+            reply_markup=get_cancel_admin_kb(),
+            parse_mode="HTML"
+        )
+        return
+
+    await state.update_data(spam_text=raw_msg)
+    await state.set_state(AdminStates.waiting_for_spam_count)
+
+    text = (
+        "🔢 <b>Количество сообщений</b> (Шаг 3/4)\n\n"
+        "Выберите готовый вариант на кнопках ниже или напишите своё число сообщений в чат:\n"
+        "• <b>Всего:</b> общее число сообщений, которое аккаунты по очереди отправят в чат.\n"
+        "• <b>С каждого:</b> указанное число сообщений отправит <i>каждый</i> привязанный аккаунт."
+    )
+
+    await message.answer(text, reply_markup=get_spam_count_kb(), parse_mode="HTML")
+
+@router.callback_query(AdminStates.waiting_for_spam_count, F.data.startswith("spam_cnt:"))
+async def cb_process_spam_count(callback: CallbackQuery, state: FSMContext):
+    parts = callback.data.split(":")
+    mode = parts[1]
+    count = int(parts[2])
+
+    count_mode = "per_account" if mode == "per_acc" else "total"
+    await state.update_data(spam_count=count, spam_count_mode=count_mode)
+    await state.set_state(AdminStates.waiting_for_spam_delay)
+
+    text = (
+        "⏱ <b>Задержка между сообщениями (КД)</b> (Шаг 4/4)\n\n"
+        "Выберите интервал отправки сообщений:\n"
+        "• ⚡️ <b>Без КД (турбо ~0.05с):</b> максимальная скорость отправки.\n"
+        "• ⚡️ <b>Мин. КД (~0.3с):</b> минимальный безопасный интервал Telegram.\n"
+        "• ⏱ <b>1–5 сек:</b> размеренная отправка с фикс-паузой."
+    )
+
+    await callback.message.edit_text(text, reply_markup=get_spam_delay_kb(), parse_mode="HTML")
+    await callback.answer()
+
+@router.message(AdminStates.waiting_for_spam_count)
+async def process_spam_count_text_input(message: Message, state: FSMContext):
+    raw_text = message.text.strip() if message.text else ""
+    if not raw_text.isdigit() or int(raw_text) <= 0:
+        await message.answer(
+            "❌ Введите положительное целое число (например: <code>20</code>) или выберите вариант на клавиатуре:",
+            reply_markup=get_spam_count_kb(),
+            parse_mode="HTML"
+        )
+        return
+
+    count = int(raw_text)
+    await state.update_data(spam_count=count, spam_count_mode="total")
+    await state.set_state(AdminStates.waiting_for_spam_delay)
+
+    text = (
+        "⏱ <b>Задержка между сообщениями (КД)</b> (Шаг 4/4)\n\n"
+        "Выберите интервал отправки сообщений:\n"
+        "• ⚡️ <b>Без КД (турбо ~0.05с):</b> максимальная скорость отправки.\n"
+        "• ⚡️ <b>Мин. КД (~0.3с):</b> минимальный безопасный интервал Telegram.\n"
+        "• ⏱ <b>1–5 сек:</b> размеренная отправка с фикс-паузой."
+    )
+
+    await message.answer(text, reply_markup=get_spam_delay_kb(), parse_mode="HTML")
+
+@router.callback_query(AdminStates.waiting_for_spam_delay, F.data.startswith("spam_delay:"))
+async def cb_process_spam_delay(callback: CallbackQuery, state: FSMContext):
+    delay_val = callback.data.split(":")[1]
+    if delay_val == "custom":
+        await state.set_state(AdminStates.waiting_for_spam_custom_delay)
+        await callback.message.edit_text(
+            "✍️ <b>Ввод своей задержки</b>\n\n"
+            "Введите задержку между отправками в секундах (например: <code>0.1</code>, <code>0.5</code>, <code>1.5</code>):",
+            reply_markup=get_cancel_admin_kb(),
+            parse_mode="HTML"
+        )
+        await callback.answer()
+        return
+
+    delay = float(delay_val)
+    await state.update_data(spam_delay=delay)
+    await render_spam_confirmation(callback.message, state, is_callback=True)
+    await callback.answer()
+
+@router.message(AdminStates.waiting_for_spam_custom_delay)
+async def process_spam_custom_delay_input(message: Message, state: FSMContext):
+    raw_text = message.text.strip().replace(",", ".") if message.text else ""
+    try:
+        val = float(raw_text)
+        if val < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer(
+            "❌ Некорректное значение. Введите число секунд (например: <code>0.2</code> или <code>2.0</code>):",
+            reply_markup=get_cancel_admin_kb(),
+            parse_mode="HTML"
+        )
+        return
+
+    await state.update_data(spam_delay=val)
+    await render_spam_confirmation(message, state, is_callback=False)
+
+async def render_spam_confirmation(message_obj: Message, state: FSMContext, is_callback: bool = False):
+    """
+    Отображение экрана подтверждения параметров спама.
+    """
+    data = await state.get_data()
+    target = data.get("spam_target", "—")
+    spam_text = data.get("spam_text", "")
+    count = data.get("spam_count", 10)
+    count_mode = data.get("spam_count_mode", "total")
+    delay = data.get("spam_delay", 0.05)
+
+    async with get_session() as session:
+        stmt = select(func.count(UserSession.user_id)).where(
+            (UserSession.is_active == True) | (UserSession.is_active == 1) | (UserSession.is_active.is_(None))
+        )
+        sess_count = (await session.execute(stmt)).scalar() or 0
+
+    if count_mode == "per_account":
+        count_desc = f"по {count} сообщ. с каждого (всего ~{count * sess_count})"
+    else:
+        count_desc = f"{count} сообщ. всего в группу"
+
+    delay_desc = f"{delay} сек." if delay > 0 else "Без КД (турбо)"
+    text_preview = spam_text[:120] + ("..." if len(spam_text) > 120 else "")
+
+    summary_text = (
+        "📋 <b>Подтверждение параметров отправки:</b>\n\n"
+        f"📍 <b>Группа:</b> <code>{target}</code>\n"
+        f"💬 <b>Текст:</b> <i>«{text_preview}»</i>\n"
+        f"🔢 <b>Объем:</b> <b>{count_desc}</b>\n"
+        f"⏱ <b>Интервал (КД):</b> <b>{delay_desc}</b>\n"
+        f"📱 <b>Активных аккаунтов:</b> <b>{sess_count}</b>\n\n"
+        "<i>Нажмите «🚀 Запустить отправку» — аккаунты подключатся к группе и начнут непрерывную отправку сообщений:</i>"
+    )
+
+    if is_callback:
+        await message_obj.edit_text(summary_text, reply_markup=get_spam_confirm_kb(), parse_mode="HTML")
+    else:
+        await message_obj.answer(summary_text, reply_markup=get_spam_confirm_kb(), parse_mode="HTML")
+
+@router.callback_query(F.data == "spam_confirm_start")
+async def cb_spam_confirm_start(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    is_adm, is_super, admin = await is_admin_check(callback.from_user.id)
+    if not is_adm or (not is_super and not admin.can_view_sessions and not admin.can_manage_broadcasts):
+        await callback.answer("⛔️ Недостаточно прав.", show_alert=True)
+        return
+
+    if group_spam_service.is_running():
+        await callback.answer("⚠️ Отправка уже запущена!", show_alert=True)
+        return
+
+    data = await state.get_data()
+    target = data.get("spam_target")
+    spam_text = data.get("spam_text")
+    count = data.get("spam_count", 10)
+    count_mode = data.get("spam_count_mode", "total")
+    delay = data.get("spam_delay", 0.05)
+
+    if not target or not spam_text:
+        await callback.answer("❌ Ошибка данных сессии. Начните заново.", show_alert=True)
+        await state.clear()
+        return
+
+    await state.clear()
+    await callback.answer("🚀 Запуск отправки...", show_alert=False)
+
+    started = await group_spam_service.start_spam(
+        target_group=target,
+        message_text=spam_text,
+        count=count,
+        count_mode=count_mode,
+        delay=delay,
+        bot=bot,
+        admin_chat_id=callback.message.chat.id,
+        status_message_id=callback.message.message_id,
+    )
+
+    if not started:
+        await callback.message.edit_text(
+            "⚠️ Не удалось запустить отправку (возможно, другая задача уже выполняется).",
+            reply_markup=get_admin_back_kb(),
+            parse_mode="HTML"
+        )
+
+@router.callback_query(F.data == "admin_spam_stop")
+async def cb_admin_spam_stop(callback: CallbackQuery):
+    is_adm, is_super, admin = await is_admin_check(callback.from_user.id)
+    if not is_adm or (not is_super and not admin.can_view_sessions and not admin.can_manage_broadcasts):
+        await callback.answer("⛔️ Недостаточно прав.", show_alert=True)
+        return
+
+    if not group_spam_service.is_running():
+        await callback.answer("Отправка уже не активна.", show_alert=False)
+        return
+
+    group_spam_service.stop()
+    await callback.answer("🛑 Сигнал остановки отправлен!", show_alert=True)
 
 # =========================================================================
 # СИСТЕМА БЛОКИРОВКИ (БАН-ЛИСТ)
